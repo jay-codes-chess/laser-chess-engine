@@ -17,6 +17,14 @@
 #include <string>
 #include "board.h"
 
+// UCI eval weights (set from UCI options)
+// 0=material, 1=pawn, 2=space, 3=development, 4=initiative, 5=king safety
+extern int eval_weights[6];
+
+// Dev mode flags (controlled by UCI options)
+extern bool showEval;
+extern bool showExplanation;
+
 namespace HumanEval {
 
 // ============================================================================

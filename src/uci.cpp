@@ -37,7 +37,7 @@
 
 // Human eval weights (dev only)
 // 0=material, 1=pawn, 2=space, 3=development, 4=initiative, 5=kingsafety
-static int eval_weights[6] = {100, 100, 100, 100, 100, 100};
+int eval_weights[6] = {100, 100, 100, 100, 100, 100};
 
 // Dev mode flags (controlled by UCI options)
 bool showEval = false;

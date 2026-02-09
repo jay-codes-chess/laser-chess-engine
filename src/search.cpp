@@ -1629,44 +1629,99 @@ double getHumanStyleMultiplier(int phase) {
 int applyHumanEvalStyle(const Board& b, int rawEval, int phase) {
     HumanEval::ImbalanceAnalysis ia = HumanEval::analyzeImbalances(b);
     
-    double mult = getHumanStyleMultiplier(phase);
+    // Calculate weighted human-style evaluation
+    // The rawEval already includes some basic evaluation
+    // We need to add human-specific adjustments
     
-    // Style-aware initiative bonus
-    int initBonus = 0;
-    if (phase == 0) {  // Midgame
-        if (ia.initiative > 15) {
-            // Strong initiative - more valuable in Tactical/Attacking
-            initBonus = ia.initiative;
-            if (HumanEval::getStyle() == HumanEval::PlayingStyle::TACTICAL ||
-                HumanEval::getStyle() == HumanEval::PlayingStyle::ATTACKING) {
-                initBonus *= 2;
-            }
-        }
+    double styleMult = getHumanStyleMultiplier(phase);
+    
+    // Apply eval_weights multipliers (0-200 scale, 100 = normal)
+    // Scale from 0-200 to 0.0-2.0 multiplier
+    double materialMult = eval_weights[0] / 100.0;
+    double pawnMult = eval_weights[1] / 100.0;
+    double spaceMult = eval_weights[2] / 100.0;
+    double devMult = eval_weights[3] / 100.0;
+    double initMult = eval_weights[4] / 100.0;
+    double ksMult = eval_weights[5] / 100.0;
+    
+    // Start with raw eval (already has material, basic pawn structure)
+    int humanEval = rawEval;
+    
+    // Add weighted human eval components
+    // Material adjustment: if eval_weights[0] != 100, scale material component
+    // For simplicity, we adjust based on the imbalance
+    if (materialMult != 1.0) {
+        // Scale the entire evaluation based on material weight
+        // This means material matters more or less
+        double diffFrom100 = (materialMult - 1.0);
+        humanEval += (int)(ia.material * diffFrom100 * 0.1); // Subtle adjustment
     }
     
-    // Exchange sacrifice forgiveness (material worth less)
+    // Pawn structure adjustment
+    if (ia.pawn_structure != 0) {
+        humanEval += (int)(ia.pawn_structure * pawnMult);
+    }
+    
+    // Space adjustment  
+    if (ia.space != 0) {
+        humanEval += (int)(ia.space * spaceMult);
+    }
+    
+    // Development adjustment
+    if (ia.development != 0) {
+        humanEval += (int)(ia.development * devMult);
+    }
+    
+    // Initiative adjustment (THIS IS KEY - counts forcing moves!)
+    if (ia.initiative != 0) {
+        humanEval += (int)(ia.initiative * initMult);
+    }
+    
+    // King safety adjustment
+    if (ia.king_safety != 0) {
+        humanEval += (int)(ia.king_safety * ksMult);
+    }
+    
+    // Activity adjustment
+    if (ia.activity != 0) {
+        // Activity follows initiative weight
+        humanEval += (int)(ia.activity * initMult);
+    }
+    
+    // Endgame-specific bonuses
+    if (ia.is_endgame) {
+        // King centrality
+        int kingCent = ia.king_activity_white - ia.king_activity_black;
+        humanEval += (int)(kingCent * initMult);
+        
+        // Opposition status
+        if (ia.opposition_status != 0) {
+            humanEval += ia.opposition_status * 10; // Direct opposition worth ~30
+        }
+        
+        // Right rook's back penalty is already in pawn structure
+    }
+    
+    // Exchange sacrifice forgiveness
     if (ia.exchange_sacrifice) {
         int discount = ia.exchange_discount;
+        // Tactical/Attacking styles forgive more
         if (HumanEval::getStyle() == HumanEval::PlayingStyle::TACTICAL ||
             HumanEval::getStyle() == HumanEval::PlayingStyle::ATTACKING) {
-            discount *= 2;  // Forgive more
+            discount *= 2;
         }
-        rawEval += discount;
+        humanEval += discount;
     }
     
-    // Pawn storm adjustment
-    if (ia.opposite_castling) {
-        // If opposite castling, king safety matters more
-        if (ia.black_king_exposed) rawEval -= 30;
-        if (ia.white_king_exposed) rawEval += 30;
+    // Opposite castling / pawn storm adjustments
+    if (ia.opposite_castling && ia.pawn_storm_strength != 0) {
+        // If pawn storm is strong, king safety matters more
+        humanEval += (ia.pawn_storm_strength > 0) ? (int)(20 * ksMult) : (int)(-20 * ksMult);
     }
     
     // Apply style multiplier
-    rawEval = (int)(rawEval * mult);
+    humanEval = (int)(humanEval * styleMult);
     
-    // Add initiative bonus
-    rawEval += initBonus;
-    
-    return rawEval;
+    return humanEval;
 }
 
