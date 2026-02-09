@@ -1,0 +1,57 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact: laser-linux-x64
+          - os: macos-latest
+            artifact: laser-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build on Linux
+        if: runner.os == 'Linux'
+        run: |
+          cd src
+          g++ -O3 -std=c++11 -o laser bbinit.cpp board.cpp common.cpp eval.cpp hash.cpp search.cpp moveorder.cpp uci.cpp human_eval.cpp -lpthread
+          strip laser
+          mv laser ${{ env.artifact }}-${{ github.run_id }}
+
+      - name: Build on macOS
+        if: runner.os == 'macOS'
+        run: |
+          cd src
+          g++ -O3 -std=c++11 -o laser bbinit.cpp board.cpp common.cpp eval.cpp hash.cpp search.cpp moveorder.cpp uci.cpp human_eval.cpp -lpthread
+          mv laser ${{ env.artifact }}-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.artifact }}
+          path: src/${{ env.artifact }}-${{ github.run_id }}
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            src/laser-linux-x64-*
+            src/laser-macos-arm64-*
+          draft: false
+          prerelease: true
+          generate_release_notes: true
