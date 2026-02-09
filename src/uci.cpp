@@ -84,9 +84,9 @@ int main(int argc, char **argv) {
 
     string input;
     std::vector<string> inputVector;
-    string name = "Laser";
-    string version = "1.8 beta";
-    string author = "Jeffrey An and Michael An";
+    string name = "Laser Man";
+    string version = "1.0 TEACH";
+    string author = "Based on Laser by Jeffrey An and Michael An. Extended with GM chess knowledge.";
     std::thread searchThread;
 
     Board board = fenToBoard(STARTPOS);
