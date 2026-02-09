@@ -572,21 +572,214 @@ bool isKingVulnerableToStorm(const Board& bd, int color) {
 }
 
 // ============================================================================
-// ENDGAME
+// ENDGAME PRINCIPLES (SHERESHEVSKY)
 // ============================================================================
+//
+// From Shereshevsky's "Strategic Play" and endgame books:
+// 1. King centrality - kings should head toward the center in endgames
+// 2. The Opposition - who controls the key squares
+// 3. Key squares - critical squares for king/pawn battles
+// 4. "Do not hurry" - patient play wins endgames
+// 5. Wrong rook's back - rook on wrong color square for pawn
 
+// Key squares in king and pawn endgames
+// For White king: squares white king wants to control
+static const int KEY_SQUARES_WHITE[64] = {
+    // Files a-h, Ranks 1-8 (a1=0, h8=63)
+    0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,
+    0,0,0,5,5,0,0,0,  // Rank 4
+    0,0,0,5,5,0,0,0,  // Rank 5 - key squares around center
+    0,0,0,5,5,0,0,0,  // Rank 6
+    0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0
+};
+
+// Evaluate king centrality in endgame
+// From Shereshevsky: "The king should head for the center in the endgame"
 int evaluateEndgameKing(const Board& bd, int color) {
     int ks = bd.getKingSq(color), oks = bd.getKingSq(1-color);
-    int kf = ks % 8, kr = ks / 8, okf = oks % 8, okr = oks / 8;
-    int d = abs(kf - 3) + abs(kr - 3);
-    int od = abs(okf - 3) + abs(okr - 3);
-    return (d < od) ? (od - d) * 8 : 0;
+    int kf = ks % 8, kr = ks / 8;
+    int okf = oks % 8, okr = oks / 8;
+    
+    // Distance from center (d4/e4/d5/e5 = 26,27,34,35)
+    int center_dist = abs(kf - 4) + abs(kr - 4); // Target d4 (4,3)
+    int opp_center = abs(okf - 4) + abs(okr - 4);
+    
+    // Reward being closer to center than opponent
+    int bonus = 0;
+    if (center_dist < opp_center) {
+        bonus = (opp_center - center_dist) * 10;
+    }
+    
+    // Extra bonus for controlling key squares
+    bonus += KEY_SQUARES_WHITE[ks];
+    
+    return bonus;
 }
 
+// Determine opposition type
+OppositionType getOppositionType(const Board& bd) {
+    int wk = bd.getKingSq(WHITE), bk = bd.getKingSq(BLACK);
+    int wkf = wk % 8, wkr = wk / 8;
+    int bkf = bk % 8, bkr = bk / 8;
+    
+    int file_diff = abs(wkf - bkf);
+    int rank_diff = abs(wkr - bkr);
+    
+    // Not on same rank or file = diagonal opposition (if both differ by 1)
+    if (file_diff == rank_diff && file_diff % 2 == 1) {
+        return OppositionType::DIAGONAL;
+    }
+    
+    // Same rank
+    if (rank_diff == 0 && file_diff > 0) {
+        if (file_diff % 2 == 1) return OppositionType::DIRECT;
+        if (file_diff == 2) return OppositionType::DISTANT;
+        if (file_diff > 2) return OppositionType::DISTANT;
+    }
+    
+    // Same file
+    if (file_diff == 0 && rank_diff > 0) {
+        if (rank_diff % 2 == 1) return OppositionType::DIRECT;
+        if (rank_diff == 2) return OppositionType::DISTANT;
+        if (rank_diff > 2) return OppositionType::DISTANT;
+    }
+    
+    return OppositionType::NONE;
+}
+
+// Evaluate opposition status
+// Returns: positive = White has opposition, negative = Black has opposition
 int evaluateOpposition(const Board& bd, int color) {
-    int ks = bd.getKingSq(color), oks = bd.getKingSq(1-color);
-    int diff = abs((ks % 8) - (oks % 8)) + abs((ks / 8) - (oks / 8));
-    return (diff > 0 && diff % 2 == 0) ? ((color == WHITE) ? 1 : -1) : 0;
+    OppositionType opp = getOppositionType(bd);
+    
+    // Direct opposition is most valuable
+    if (opp == OppositionType::DIRECT) {
+        // If it's White's move and they're in opposition = good for player to move
+        // If it's Black's move and they're in opposition = bad for White
+        bool white_to_move = (bd.getPlayerToMove() == WHITE);
+        if (color == WHITE) {
+            return white_to_move ? 30 : -30;
+        } else {
+            return white_to_move ? -30 : 30;
+        }
+    }
+    
+    // Distant opposition - useful for planning
+    if (opp == OppositionType::DISTANT) {
+        return (color == WHITE) ? 15 : -15;
+    }
+    
+    // Diagonal opposition - temporary
+    if (opp == OppositionType::DIAGONAL) {
+        return (color == WHITE) ? 10 : -10;
+    }
+    
+    return 0;
+}
+
+// Check if a pawn is a rook pawn (a or h file)
+bool isRookPawn(const Board& bd, int color, int sq) {
+    int file = sq % 8;
+    uint64_t pawns = bd.getPieces(color, PAWNS);
+    return (pawns & (1ULL << sq)) && (file == 0 || file == 7);
+}
+
+// Check if rook is correctly placed behind its pawn
+// Returns: positive = good rook placement, negative = bad (wrong rook's back)
+// From Euwe/Kramer: Rook should be behind its pawn, on the opposite color square
+int evaluateRookPlacement(const Board& bd, int color) {
+    int score = 0;
+    uint64_t rooks = bd.getPieces(color, ROOKS);
+    uint64_t pawns = bd.getPieces(color, PAWNS);
+    
+    while (rooks) {
+        int rsq = __builtin_ctzll(rooks);
+        rooks &= rooks - 1;
+        int rf = rsq % 8, rr = rsq / 8;
+        int r_color = (rr + rf) % 2; // Square color
+        
+        // Check pawns on same file
+        for (int r = 0; r < 8; r++) {
+            int psq = rf + r * 8;
+            if (pawns & (1ULL << psq)) {
+                int pr = r;
+                int p_color = (pr + rf) % 2;
+                
+                // Is rook behind pawn?
+                bool rook_behind = (color == WHITE && rr < pr) || (color == BLACK && rr > pr);
+                
+                if (rook_behind) {
+                    // Same color = "wrong rook" - should be different color
+                    if (r_color == p_color) {
+                        score -= 25; // Wrong rook's back
+                    } else {
+                        score += 15; // Correct rook placement
+                    }
+                }
+                break; // Only check front-most pawn on file
+            }
+        }
+    }
+    
+    return score;
+}
+
+// Evaluate "do not hurry" principle (Shereshevsky)
+// Returns bonus for patient, methodical play
+int evaluatePatience(const Board& bd, int color) {
+    int bonus = 0;
+    
+    // In endings, don't rush pawn moves
+    // If you have opposition and a passed pawn, wait!
+    
+    // Check for winning pawn endgame
+    uint64_t w_pawns = bd.getPieces(WHITE, PAWNS);
+    uint64_t b_pawns = bd.getPieces(BLACK, PAWNS);
+    
+    int w_piece_count = __builtin_popcountll(bd.getPieces(WHITE, KNIGHTS) | bd.getPieces(WHITE, BISHOPS) | 
+                                            bd.getPieces(WHITE, ROOKS) | bd.getPieces(WHITE, QUEENS));
+    int b_piece_count = __builtin_popcountll(bd.getPieces(BLACK, KNIGHTS) | bd.getPieces(BLACK, BISHOPS) | 
+                                            bd.getPieces(BLACK, ROOKS) | bd.getPieces(BLACK, QUEENS));
+    
+    bool is_pawn_endgame = (w_piece_count == 0 && b_piece_count == 0);
+    
+    if (is_pawn_endgame) {
+        // In pure pawn endings, patience is key
+        // If you have opposition, you can afford to wait
+        
+        // Bonus for having the opposition in pawn endgame
+        OppositionType opp = getOppositionType(bd);
+        if (opp == OppositionType::DIRECT) {
+            bool white_to_move = (bd.getPlayerToMove() == WHITE);
+            if ((color == WHITE && white_to_move) || (color == BLACK && !white_to_move)) {
+                bonus += 40; // Having the move with opposition = strong
+            }
+        }
+    }
+    
+    return bonus;
+}
+
+// Comprehensive endgame evaluation combining all principles
+int evaluateEndgame(const Board& bd, int color) {
+    int score = 0;
+    
+    // 1. King centrality (Shereshevsky)
+    score += evaluateEndgameKing(bd, color);
+    
+    // 2. Opposition
+    score += evaluateOpposition(bd, color);
+    
+    // 3. Rook placement (right rook's back)
+    score += evaluateRookPlacement(bd, color);
+    
+    // 4. Patience (do not hurry)
+    score += evaluatePatience(bd, color);
+    
+    return score;
 }
 
 bool detectExchangeSacrifice(const Board& bd, int color, int& discount) {
@@ -664,9 +857,16 @@ ImbalanceAnalysis analyzeImbalances(const Board& bd) {
     
     ia.is_endgame = ia.material < 2500;
     if (ia.is_endgame) {
-        ia.king_activity_white = evaluateEndgameKing(bd, WHITE);
-        ia.king_activity_black = evaluateEndgameKing(bd, BLACK);
+        // Comprehensive endgame evaluation (Shereshevsky principles)
+        int w_eg = evaluateEndgame(bd, WHITE);
+        int b_eg = evaluateEndgame(bd, BLACK);
+        
+        ia.king_activity_white = w_eg;
+        ia.king_activity_black = b_eg;
         ia.opposition_status = evaluateOpposition(bd, WHITE);
+        
+        // Add endgame bonus to pawn structure (king activity matters in endings)
+        ia.pawn_structure += (w_eg - b_eg) / 5;
     }
     
     // Pawn storm detection (opposite castling)

@@ -224,12 +224,40 @@ bool detectRookOn7th(const Board& b, int color);
 // ============================================================================
 // ENDGAME PRINCIPLES (SHERESHEVSKY)
 // ============================================================================
+//
+// From Shereshevsky's endgame teachings:
+// - King centrality: kings should head toward the center in endgames
+// - The Opposition: who controls the key squares
+// - Key squares: critical squares for king/pawn battles
+// - "Do not hurry": patient play wins endgames
+// - Wrong rook's back: rook should be behind its pawn, opposite color
 
-// Evaluate king activity in endgame
+// Opposition types
+enum class OppositionType {
+    NONE,           // No opposition
+    DIRECT,         // Kings on same file/rank with odd distance
+    DISTANT,        // Kings separated by 2+ squares  
+    DIAGONAL,       // Kings on same diagonal
+    HOLE            // Can give opposition
+};
+
+// Determine opposition type
+OppositionType getOppositionType(const Board& b);
+
+// Evaluate king activity in endgame (centrality)
 int evaluateEndgameKing(const Board& b, int color);
 
-// Check opposition status (distant, diagonal, etc.)
+// Check opposition status
 int evaluateOpposition(const Board& b, int color);
+
+// Evaluate rook placement (right rook's back)
+int evaluateRookPlacement(const Board& b, int color);
+
+// Evaluate "do not hurry" patience principle
+int evaluatePatience(const Board& b, int color);
+
+// Comprehensive endgame evaluation
+int evaluateEndgame(const Board& b, int color);
 
 // ============================================================================
 // MATERIAL IMBALANCE
