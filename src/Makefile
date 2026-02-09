@@ -15,17 +15,21 @@
 # along with Laser.  If not, see <http://www.gnu.org/licenses/>.
 
 CC      = g++
-CFLAGS  = -Wall -Wextra -Wcast-qual -Wshadow -DNDEBUG -ansi -pedantic -std=c++11 -O3 -flto
+CFLAGS  = -Wall -Wextra -Wcast-qual -Wshadow -DNDEBUG -ansi -pedantic -std=c++11 -O3
 LDFLAGS = -lpthread
 OBJS    = bbinit.o board.o common.o eval.o hash.o search.o moveorder.o syzygy/tbprobe.o
 EXE     = laser
 
-ifeq ($(USE_STATIC), true)
-	LDFLAGS += -static -static-libgcc -static-libstdc++
+# Auto-detect architecture for SSE3/popcnt
+ARCH := $(shell uname -m)
+ifneq ($(NOPOPCNT), true)
+ifneq ($(ARCH), arm64)  # Not Apple Silicon
+	CFLAGS += -msse3 -mpopcnt
+endif
 endif
 
-ifneq ($(NOPOPCNT), true)
-	CFLAGS += -msse3 -mpopcnt
+ifeq ($(USE_STATIC), true)
+	LDFLAGS += -static -static-libgcc -static-libstdc++
 endif
 
 ifeq ($(BMI2), true)
@@ -35,7 +39,7 @@ endif
 all: uci
 
 uci: $(OBJS) uci.o
-	$(CC) -O3 -flto -o $(EXE)$(EXT) $^ $(LDFLAGS)
+	$(CC) -O3 -o $(EXE)$(EXT) $^ $(LDFLAGS)
 
 %.o: %.cpp
 	$(CC) -c $(CFLAGS) -x c++ $< -o $@
