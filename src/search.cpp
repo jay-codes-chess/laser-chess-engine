@@ -38,6 +38,9 @@ using std::cout;
 using std::cerr;
 using std::endl;
 
+// Forward declaration for human eval style modifier
+int applyHumanEvalStyle(const Board& b, int rawEval, int phase);
+
 
 // Records search statistics required by the UCI protocol
 struct SearchStatistics {
@@ -545,11 +548,21 @@ void getBestMove(const Board *b, TimeManagement *timeParams, MoveList legalMoves
         if (showEval) {
             HumanEval::ImbalanceAnalysis ia = HumanEval::analyzeImbalances(*b);
             cout << "info string Eval: Mat " << ia.material 
-                 << " Pawn " << ia.pawn_structure 
-                 << " Space " << ia.space 
+                 << " Pwn " << ia.pawn_structure 
+                 << " Spc " << ia.space 
                  << " Dev " << ia.development 
                  << " Init " << ia.initiative 
-                 << " KS " << ia.king_safety << endl;
+                 << " KS " << ia.king_safety;
+            
+            // Add sacrifice assessments
+            if (ia.exchange_sacrifice) {
+                cout << " Xchg " << ia.exchange_discount;
+            }
+            if (ia.pawn_sacrifice) {
+                cout << " PwnSacr";
+            }
+            
+            cout << endl;
             
             // Pass the best move to generate explanation
             if (bestMove != NULL_MOVE) {
@@ -806,7 +819,10 @@ int PVS(Board &b, int depth, int alpha, int beta, int threadID, bool isCutNode, 
         }
         else {
             Eval e;
-            ssi->staticEval = staticEval = (color == WHITE) ? e.evaluate(b) : -e.evaluate(b);
+            int rawEval = (color == WHITE) ? e.evaluate(b) : -e.evaluate(b);
+            // Apply human eval style modifier
+            int phase = (rawEval > 3000 || rawEval < -3000) ? 1 : 0;  // Simplified phase detection
+            ssi->staticEval = staticEval = applyHumanEvalStyle(b, rawEval, phase);
             transpositionTable.add(b, -INFTY, NULL_MOVE, staticEval, -8, NO_NODE_INFO);
         }
     }
@@ -1303,12 +1319,16 @@ int quiescence(Board &b, int plies, int alpha, int beta, int threadID) {
         }
         else {
             Eval e;
-            hashEval = staticEval = (color == WHITE) ? e.evaluate(b) : -e.evaluate(b);
+            int rawEval = (color == WHITE) ? e.evaluate(b) : -e.evaluate(b);
+            int phase = (rawEval > 3000 || rawEval < -3000) ? 1 : 0;
+            hashEval = staticEval = applyHumanEvalStyle(b, rawEval, phase);
         }
     }
     else {
         Eval e;
-        hashEval = staticEval = (color == WHITE) ? e.evaluate(b) : -e.evaluate(b);
+        int rawEval = (color == WHITE) ? e.evaluate(b) : -e.evaluate(b);
+        int phase = (rawEval > 3000 || rawEval < -3000) ? 1 : 0;
+        hashEval = staticEval = applyHumanEvalStyle(b, rawEval, phase);
         transpositionTable.add(b, -INFTY, NULL_MOVE, hashEval, -8, NO_NODE_INFO);
     }
 
@@ -1578,3 +1598,75 @@ double getPercentage(uint64_t numerator, uint64_t denominator) {
     double percent = ((double) tenThousandths) / 100.0;
     return percent;
 }
+
+// ============================================================================
+// HUMAN EVAL INTEGRATION - Style-aware evaluation modifier
+// ============================================================================
+
+#include <cmath>
+
+// Get style multiplier
+double getHumanStyleMultiplier(int phase) {
+    // phase: 0=midgame, 1=endgame
+    switch (HumanEval::getStyle()) {
+        case HumanEval::PlayingStyle::CLASSICAL:
+            return 1.0;
+        case HumanEval::PlayingStyle::ATTACKING:
+            return (phase == 0) ? 1.2 : 0.8;
+        case HumanEval::PlayingStyle::TACTICAL:
+            return (phase == 0) ? 1.3 : 0.6;
+        case HumanEval::PlayingStyle::POSITIONAL:
+            return (phase == 0) ? 0.8 : 1.2;
+        case HumanEval::PlayingStyle::TECHNICAL:
+            return (phase == 0) ? 0.6 : 1.4;
+        default:
+            return 1.0;
+    }
+}
+
+// Apply human eval style modifiers to the raw evaluation score
+// Returns modified score in centipawns
+int applyHumanEvalStyle(const Board& b, int rawEval, int phase) {
+    HumanEval::ImbalanceAnalysis ia = HumanEval::analyzeImbalances(b);
+    
+    double mult = getHumanStyleMultiplier(phase);
+    
+    // Style-aware initiative bonus
+    int initBonus = 0;
+    if (phase == 0) {  // Midgame
+        if (ia.initiative > 15) {
+            // Strong initiative - more valuable in Tactical/Attacking
+            initBonus = ia.initiative;
+            if (HumanEval::getStyle() == HumanEval::PlayingStyle::TACTICAL ||
+                HumanEval::getStyle() == HumanEval::PlayingStyle::ATTACKING) {
+                initBonus *= 2;
+            }
+        }
+    }
+    
+    // Exchange sacrifice forgiveness (material worth less)
+    if (ia.exchange_sacrifice) {
+        int discount = ia.exchange_discount;
+        if (HumanEval::getStyle() == HumanEval::PlayingStyle::TACTICAL ||
+            HumanEval::getStyle() == HumanEval::PlayingStyle::ATTACKING) {
+            discount *= 2;  // Forgive more
+        }
+        rawEval += discount;
+    }
+    
+    // Pawn storm adjustment
+    if (ia.opposite_castling) {
+        // If opposite castling, king safety matters more
+        if (ia.black_king_exposed) rawEval -= 30;
+        if (ia.white_king_exposed) rawEval += 30;
+    }
+    
+    // Apply style multiplier
+    rawEval = (int)(rawEval * mult);
+    
+    // Add initiative bonus
+    rawEval += initBonus;
+    
+    return rawEval;
+}
+
