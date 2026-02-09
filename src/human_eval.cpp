@@ -255,14 +255,31 @@ void analyzePieceActivity(const Board& bd, int color, PieceActivity& pa) {
 
 int evaluateKingSafety(const Board& bd, int color) {
     int s = 0, ks = bd.getKingSq(color), f = ks % 8;
+    int start_sq = (color == WHITE) ? 4 : 60; // e1 or e8
     bool can_castle = (bd.getCastlingRights() & (color == WHITE ? WHITECASTLE : BLACKCASTLE));
-    if (!can_castle) {
-        if ((color == WHITE && ks >= 56) || (color == BLACK && ks <= 7)) s -= 25;
+    
+    if (can_castle) {
+        s += 30; // CASTLED is valuable!
+    } else {
+        // King safety penalty for being unable to castle
+        s -= 30;
+        
+        // Extra penalty if king hasn't castled and is still near center
+        // If king is on starting square or nearby (walked), that's bad
+        int dist_from_start = abs(ks - start_sq);
+        if (dist_from_start < 4) { // King hasn't moved far - probably walked
+            s -= 20;
+        }
+        
+        // Pawn shield assessment
         uint64_t pawns = bd.getPieces(color, PAWNS);
-        if (color == WHITE) { if (pawns & (1ULL << 5)) s += 5; if (pawns & (1ULL << 6)) s += 5; }
-        else { if (pawns & (1ULL << 61)) s += 5; if (pawns & (1ULL << 62)) s += 5; }
-        if (f <= 1 || f >= 6) s -= 10;
-    } else s += 20;
+        if (color == WHITE) { 
+            if (pawns & (1ULL << 5)) s += 5; if (pawns & (1ULL << 6)) s += 5; 
+        } else { 
+            if (pawns & (1ULL << 61)) s += 5; if (pawns & (1ULL << 62)) s += 5; 
+        }
+        if (f <= 1 || f >= 6) s -= 15;
+    }
     return s;
 }
 
@@ -1063,8 +1080,10 @@ ImbalanceAnalysis analyzeImbalances(const Board& bd) {
     
     ia.king_safety = evaluateKingSafety(bd, WHITE) - evaluateKingSafety(bd, BLACK);
     
-    ia.white_king_exposed = !(bd.getCastlingRights() & WHITECASTLE) && bd.getKingSq(WHITE) >= 56;
-    ia.black_king_exposed = !(bd.getCastlingRights() & BLACKCASTLE) && bd.getKingSq(BLACK) <= 7;
+    // King is exposed if castling rights are lost and king hasn't castled
+    // Note: If king walked (losing castling rights), it's exposed regardless of position
+    ia.white_king_exposed = !(bd.getCastlingRights() & WHITECASTLE);
+    ia.black_king_exposed = !(bd.getCastlingRights() & BLACKCASTLE);
     ia.white_has_passed_pawn = ia.white_pawns.passed_count > 0;
     ia.black_has_passed_pawn = ia.black_pawns.passed_count > 0;
     ia.white_has_isolated = ia.white_pawns.isolated_count > 0;
