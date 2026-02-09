@@ -17,7 +17,7 @@
 CC      = g++
 CFLAGS  = -Wall -Wextra -Wcast-qual -Wshadow -DNDEBUG -ansi -pedantic -std=c++11 -O3
 LDFLAGS = -lpthread
-OBJS    = bbinit.o board.o common.o eval.o hash.o search.o moveorder.o syzygy/tbprobe.o
+OBJS    = bbinit.o board.o common.o eval.o hash.o search.o moveorder.o syzygy/tbprobe.o human_eval.o
 EXE     = laser
 
 # Auto-detect architecture for SSE3/popcnt
