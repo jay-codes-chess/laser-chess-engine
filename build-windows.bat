@@ -30,7 +30,7 @@ IF %ERRORLEVEL% EQU 0 (
     g++ -c -O3 -std=c++11 search.cpp -o search.o
     g++ -c -O3 -std=c++11 moveorder.cpp -o moveorder.o
     g++ -c -O3 -std=c++11 uci.cpp -o uci.o
-    g++ -c -O3 -std=c++11 -I. syzygy/tbcore.c -o syzygy/tbprobe.o
+    g++ -c -O3 -std=c++11 -x c++ -I. syzygy/stub.cpp -o syzygy/tbprobe.o
     g++ -O3 -o laser.exe bbinit.o board.o common.o eval.o hash.o search.o moveorder.o syzygy/tbprobe.o human_eval.o uci.o -lpthread
     GOTO BUILD_DONE
 )

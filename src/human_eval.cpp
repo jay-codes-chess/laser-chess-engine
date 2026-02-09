@@ -267,20 +267,170 @@ int evaluateKingSafety(const Board& bd, int color) {
 }
 
 // ============================================================================
-// INITIATIVE
+// INITIATIVE - "The Right to Move"
 // ============================================================================
+//
+// Initiative is NOT just having the move - it's the ABILITY to make consecutive
+// forcing moves. This is the "right to move" concept from Euwe/Kramer.
+//
+// Key ideas Forcing moves = checks, captures,:
+// 1. threats
+// 2. Who has MORE forcing moves available?
+// 3. Pawn breaks - who has the "last word"?
+// 4. Initiative transfer - when does pressure switch sides?
+//
+// From Aagaard: "The initiative is a tempo advantage - the ability to force
+// the opponent to react to your threats."
 
+// Count available forcing moves (checks, captures, direct threats)
+int countForcingMoves(const Board& bd, int color) {
+    int count = 0;
+    
+    // Get all piece types
+    uint64_t knights = bd.getPieces(color, KNIGHTS);
+    uint64_t bishops = bd.getPieces(color, BISHOPS);
+    uint64_t rooks = bd.getPieces(color, ROOKS);
+    uint64_t queens = bd.getPieces(color, QUEENS);
+    uint64_t pawns = bd.getPieces(color, PAWNS);
+    
+    // Simplified: count pieces that can give check or capture
+    // Real implementation would generate moves, but this is approximation
+    
+    // Knights giving check
+    count += __builtin_popcountll(knights);
+    
+    // Bishops/Queens on long diagonal = checking threat
+    uint64_t bq = bishops | queens;
+    uint64_t temp = bq;
+    while (temp) {
+        int sq = __builtin_ctzll(temp);
+        temp &= temp - 1;
+        int f = sq % 8, r = sq / 8;
+        // Center control = initiative
+        if (f >= 2 && f <= 5 && r >= 2 && r <= 5) count += 2;
+        else count += 1;
+    }
+    
+    // Rooks on open files = threat
+    uint64_t rq = rooks | queens;
+    temp = rq;
+    while (temp) {
+        int sq = __builtin_ctzll(temp);
+        temp &= temp - 1;
+        int f = sq % 8;
+        uint64_t fm = 0; for (int rk = 0; rk < 8; rk++) fm |= 1ULL << (f + rk * 8);
+        if (!(pawns & fm)) count += 2; // Open file rook
+        else count += 1;
+    }
+    
+    // Advanced pawns = pawn break threats
+    uint64_t adv_pawns = 0;
+    if (color == WHITE) {
+        adv_pawns = (pawns & 0xFF000000000000ULL) >> 56; // Rank 7+
+    } else {
+        adv_pawns = (pawns & 0xFFULL) << 56; // Rank 2+
+    }
+    count += __builtin_popcountll(adv_pawns) * 2;
+    
+    return count;
+}
+
+// Assess who has the "last word" on pawn breaks
+// The side that can make the LAST forcing pawn move has the initiative
+int assessPawnBreakTiming(const Board& bd, int color) {
+    int score = 0;
+    
+    // Common pawn breaks in center
+    // e4/d4 breaks by White, e5/d5 breaks by Black
+    
+    uint64_t white_pawns = bd.getPieces(WHITE, PAWNS);
+    uint64_t black_pawns = bd.getPieces(BLACK, PAWNS);
+    
+    // White's e4/d4 break potential
+    bool white_e4_ready = (white_pawns & (1ULL << 12)); // e2 pawn
+    bool white_d4_ready = (white_pawns & (1ULL << 11)); // d2 pawn
+    bool black_e5_ready = (black_pawns & (1ULL << 52)); // e7 pawn
+    bool black_d5_ready = (black_pawns & (1ULL << 51)); // d7 pawn
+    
+    // If White has e4 ready and Black can't respond with e5, White has the break
+    if (white_e4_ready && !black_e5_ready) {
+        score += 15; // White can break
+    }
+    if (white_d4_ready && !black_d5_ready) {
+        score += 15; // White can break
+    }
+    
+    // Counter-breaks
+    if (black_e5_ready && !white_e4_ready) {
+        score -= 15; // Black can break
+    }
+    if (black_d5_ready && !white_d4_ready) {
+        score -= 15; // Black can break
+    }
+    
+    return score;
+}
+
+// Enhanced initiative evaluation
+// Initiative = The right to make consecutive forcing moves
 int evaluateInitiative(const Board& bd, int color) {
-    int s = (bd.getPlayerToMove() == color) ? 10 : 0;
+    int s = 0;
+    
+    // 1. Basic tempo: having the move
+    // But "having the move" only matters if you have forcing moves!
+    bool has_move = (bd.getPlayerToMove() == color);
+    int forcing_moves = countForcingMoves(bd, color);
+    int opp_forcing_moves = countForcingMoves(bd, 1-color);
+    
+    if (has_move) {
+        // If you have the move AND more forcing moves = initiative
+        if (forcing_moves > opp_forcing_moves) {
+            s += 20; // Clear initiative
+        } else if (forcing_moves == opp_forcing_moves) {
+            s += 10; // Slight edge for having the move
+        } else {
+            s += 5; // Having the move helps even with equal forcing
+        }
+    } else {
+        // Opponent has the move
+        if (opp_forcing_moves > forcing_moves + 2) {
+            s -= 10; // Opponent has clear initiative
+        } else if (opp_forcing_moves > forcing_moves) {
+            s -= 5; // Opponent has slight initiative
+        } else {
+            s += 0; // Equal
+        }
+    }
+    
+    // 2. Active pieces contribute to initiative potential
     uint64_t br = (color == WHITE) ? (0xFFULL << 56) | 0xFFULL : 0xFFULL;
     uint64_t act = (bd.getPieces(color, KNIGHTS) | bd.getPieces(color, BISHOPS) |
                     bd.getPieces(color, ROOKS) | bd.getPieces(color, QUEENS)) & ~br;
-    s += __builtin_popcountll(act) * 5;
+    s += __builtin_popcountll(act) * 3;
+    
+    // 3. Open files = initiative potential (rook can become active)
     uint64_t pawns = bd.getPieces(color, PAWNS);
     for (int f = 0; f < 8; f++) {
         uint64_t fm = 0; for (int rk = 0; rk < 8; rk++) fm |= 1ULL << (f + rk * 8);
         if (!(pawns & fm)) s += 3;
     }
+    
+    // 4. Pawn break timing - who has the "last word"?
+    int break_score = assessPawnBreakTiming(bd, color);
+    if (color == WHITE) {
+        s += break_score;
+    } else {
+        s -= break_score; // Invert for black
+    }
+    
+    // 5. Space advantage = initiative
+    // Control of the center restricts opponent's counterplay
+    uint64_t center = (1ULL << 27) | (1ULL << 28) | (1ULL << 35) | (1ULL << 36) |
+                     (1ULL << 26) | (1ULL << 37) | (1ULL << 19) | (1ULL << 44);
+    uint64_t own_center = center & (bd.getPieces(color, PAWNS) | 
+                                     (bd.getPieces(color, KNIGHTS) | bd.getPieces(color, BISHOPS)));
+    s += __builtin_popcountll(own_center) * 2;
+    
     return s;
 }
 

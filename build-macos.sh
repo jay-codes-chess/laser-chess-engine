@@ -42,8 +42,8 @@ $CXX $CFLAGS -c moveorder.cpp -o moveorder.o
 $CXX $CFLAGS -c uci.cpp -o uci.o
 $CXX $CFLAGS -c -x c++ human_eval.cpp -o human_eval.o
 
-# Compile Syzygy (C code)
-$CXX $CFLAGS -c syzygy/tbcore.c -o syzygy/tbprobe.o
+# Compile Syzygy stub (no tablebases - just return 0)
+$CXX $CFLAGS -x c++ -c syzygy/stub.cpp -o syzygy/tbprobe.o
 
 # Link
 $CXX -O3 -o laser bbinit.o board.o common.o eval.o hash.o search.o moveorder.o syzygy/tbprobe.o human_eval.o uci.o $LDFLAGS

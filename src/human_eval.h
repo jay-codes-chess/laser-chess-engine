@@ -185,10 +185,24 @@ void analyzePieceActivity(const Board& b, int color, PieceActivity& pa);
 int evaluateKingSafety(const Board& b, int color);
 
 // ============================================================================
-// INITIATIVE AND TEMPO
+// INITIATIVE AND TEMPO ("Right to Move")
 // ============================================================================
+//
+// From Euwe/Kramer and Aagaard:
+// - Initiative is NOT just having the move - it's the ABILITY to make
+//   consecutive forcing moves
+// - "The initiative is a tempo advantage - the ability to force the
+//   opponent to react to your threats"
+// - Who has the "last word" on pawn breaks?
+// - Count forcing moves (checks, captures, threats)
 
-// Evaluate initiative (who has the initiative)
+// Count available forcing moves (checks, captures, direct threats)
+int countForcingMoves(const Board& b, int color);
+
+// Assess who has the "last word" on pawn breaks
+int assessPawnBreakTiming(const Board& b, int color);
+
+// Evaluate initiative (who has the initiative - "right to move")
 int evaluateInitiative(const Board& b, int color);
 
 // ============================================================================
