@@ -186,4 +186,8 @@ public:
 typedef SearchArrayList<Move> MoveList;
 typedef SearchArrayList<int16_t> ScoreList;
 
+// Human eval dev mode flags (defined in uci.cpp)
+extern bool showEval;
+extern bool showExplanation;
+
 #endif

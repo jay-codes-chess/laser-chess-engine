@@ -32,6 +32,7 @@
 #include "timeman.h"
 #include "uci.h"
 #include "syzygy/tbprobe.h"
+#include "human_eval.h"
 
 using std::cout;
 using std::cerr;
@@ -539,6 +540,25 @@ void getBestMove(const Board *b, TimeManagement *timeParams, MoveList legalMoves
             cout << "bestmove " << moveToString(bestMove) << " ponder " << moveToString(ponder) << endl;
         else
             cout << "bestmove " << moveToString(bestMove) << endl;
+
+        // Output human eval breakdown (dev only)
+        if (showEval) {
+            HumanEval::ImbalanceAnalysis ia = HumanEval::analyzeImbalances(*b);
+            cout << "info string Eval: Mat " << ia.material 
+                 << " Pawn " << ia.pawn_structure 
+                 << " Space " << ia.space 
+                 << " Dev " << ia.development 
+                 << " Init " << ia.initiative 
+                 << " KS " << ia.king_safety << endl;
+            
+            // Pass the best move to generate explanation
+            if (bestMove != NULL_MOVE) {
+                HumanEval::MoveExplanation exp = HumanEval::explainMove(*b, bestMove, ia);
+                if (!exp.pv_explanation.empty()) {
+                    cout << "info string Explain: " << exp.pv_explanation << endl;
+                }
+            }
+        }
     }
 }
 

@@ -33,6 +33,15 @@
 #include "search.h"
 #include "timeman.h"
 #include "uci.h"
+#include "human_eval.h"
+
+// Human eval weights (dev only)
+// 0=material, 1=pawn, 2=space, 3=development, 4=initiative, 5=kingsafety
+static int eval_weights[6] = {100, 100, 100, 100, 100, 100};
+
+// Dev mode flags (controlled by UCI options)
+bool showEval = false;
+bool showExplanation = false;
 #include "syzygy/tbprobe.h"
 
 using std::cout;
@@ -116,6 +125,17 @@ int main(int argc, char **argv) {
                  << " min " << MIN_EVAL_SCALE << " max " << MAX_EVAL_SCALE << endl;
             cout << "option name ScaleKingSafety type spin default " << DEFAULT_EVAL_SCALE
                  << " min " << MIN_EVAL_SCALE << " max " << MAX_EVAL_SCALE << endl;
+            
+            // Human Eval options (dev only)
+            cout << "option name Style type combo default Classical var Classical var Attacking var Tactical var Positional var Technical" << endl;
+            cout << "option name EvalMaterial type spin default 100 min 0 max 200" << endl;
+            cout << "option name EvalPawnStructure type spin default 100 min 0 max 200" << endl;
+            cout << "option name EvalSpace type spin default 100 min 0 max 200" << endl;
+            cout << "option name EvalDevelopment type spin default 100 min 0 max 200" << endl;
+            cout << "option name EvalInitiative type spin default 100 min 0 max 200" << endl;
+            cout << "option name EvalKingSafety type spin default 100 min 0 max 200" << endl;
+            cout << "option name ShowEval type check default false" << endl;
+            cout << "option name ShowExplanation type check default false" << endl;
             cout << "uciok" << endl;
         }
         else if (input == "isready") cout << "readyok" << endl;
@@ -290,6 +310,47 @@ int main(int argc, char **argv) {
                     if (scale > MAX_EVAL_SCALE)
                         scale = MAX_EVAL_SCALE;
                     setKingSafetyScale(scale);
+                }
+                // Human Eval options (dev only)
+                else if (inputVector.at(2) == "style") {
+                    string style = inputVector.at(4);
+                    if (style == "classical")
+                        HumanEval::setStyle(HumanEval::PlayingStyle::CLASSICAL);
+                    else if (style == "attacking")
+                        HumanEval::setStyle(HumanEval::PlayingStyle::ATTACKING);
+                    else if (style == "tactical")
+                        HumanEval::setStyle(HumanEval::PlayingStyle::TACTICAL);
+                    else if (style == "positional")
+                        HumanEval::setStyle(HumanEval::PlayingStyle::POSITIONAL);
+                    else if (style == "technical")
+                        HumanEval::setStyle(HumanEval::PlayingStyle::TECHNICAL);
+                }
+                else if (inputVector.at(2) == "evalmaterial") {
+                    // Store for later use in evaluation
+                    eval_weights[0] = std::stoi(inputVector.at(4));
+                }
+                else if (inputVector.at(2) == "evalpawnstructure") {
+                    eval_weights[1] = std::stoi(inputVector.at(4));
+                }
+                else if (inputVector.at(2) == "evalspace") {
+                    eval_weights[2] = std::stoi(inputVector.at(4));
+                }
+                else if (inputVector.at(2) == "evaldevelopment") {
+                    eval_weights[3] = std::stoi(inputVector.at(4));
+                }
+                else if (inputVector.at(2) == "evalinitiative") {
+                    eval_weights[4] = std::stoi(inputVector.at(4));
+                }
+                else if (inputVector.at(2) == "evalkingsafety") {
+                    eval_weights[5] = std::stoi(inputVector.at(4));
+                }
+                else if (inputVector.at(2) == "showeval") {
+                    string val = inputVector.at(4);
+                    showEval = (val == "true");
+                }
+                else if (inputVector.at(2) == "showexplanation") {
+                    string val = inputVector.at(4);
+                    showExplanation = (val == "true");
                 }
                 else
                     cout << "info string Invalid option." << endl;
