@@ -1,8 +1,13 @@
 /*
-    Human Chess Engine - Teaching Evaluation Module
+    Human Chess Engine - Comprehensive Chess Knowledge Implementation
     Based on Laser by Jeffrey An and Michael An
     
-    Adds Silman-style imbalances and teaching explanations.
+    Implements GM-level strategic understanding:
+    - Silman-style imbalances
+    - Shereshevsky endgame principles
+    - Russian School prophylaxis
+    - Sokolov initiative evaluation
+    - Typical positional plans
 */
 
 #ifndef HUMAN_EVAL_H
@@ -14,36 +19,101 @@
 
 namespace HumanEval {
 
-// Silman-style imbalance analysis
-struct ImbalanceAnalysis {
-    int material;           // Material difference (centipawns)
-    int pawn_structure;     // Pawn structure (+/- 20-50)
-    int space;              // Space advantage
-    int development;        // Development difference
-    int initiative;         // Who has the initiative
-    int king_safety;        // King safety comparison
+// ============================================================================
+// ENUMS AND STRUCTURES
+// ============================================================================
+
+// Playing styles affect evaluation weighting
+enum class PlayingStyle {
+    CLASSICAL,    // Balanced
+    ATTACKING,    // Exaggerate initiative, forgive exchanges
+    TACTICAL,     // Exaggerate tactics, threaten-based
+    POSITIONAL,   // Emphasize structure, patient play
+    TECHNICAL     // Endgame focus, "do not hurry"
+};
+
+// Pawn structure analysis
+struct PawnStructure {
+    int isolated_count = 0;       // Isolated pawns
+    int doubled_count = 0;       // Doubled pawns
+    int backward_count = 0;      // Backward pawns
+    int passed_count = 0;        // Passed pawns
+    int candidate_count = 0;     // Candidate passed pawns
+    int island_count = 0;         // Number of pawn islands
+    int avg_island_size = 0;      // Average island size
+    int connected_count = 0;      // Connected pawns
+    int phalanx_count = 0;        // Adjacent pawn pairs
+    bool has_chain = false;      // Has pawn chain
+    int chain_base = -1;         // Base of pawn chain
+    int chain_direction = 0;     // Direction of chain
+};
+
+// Piece activity analysis
+struct PieceActivity {
+    int knight_activity = 0;
+    int bishop_activity = 0;
+    int rook_activity = 0;
+    int queen_activity = 0;
+    int total_activity = 0;
     
     // Specific assessments
-    bool white_has_passed_pawn;
-    bool black_has_passed_pawn;
-    bool white_has_isolated;
-    bool black_has_isolated;
-    bool white_has_doubled;
-    bool black_has_doubled;
-    bool white_king_exposed;
-    bool black_king_exposed;
-    bool static_advantage_white;  // Good for white's pieces
-    bool static_advantage_black;  // Good for black's pieces
+    bool has_outpost_knight = false;
+    bool has_bishop_long_diagonal = false;
+    bool has_rook_7th_rank = false;
+    bool has_rook_open_file = false;
+    bool has_queen_central = false;
+};
+
+// Main imbalance analysis (Silman-style)
+struct ImbalanceAnalysis {
+    // Core imbalances
+    int material = 0;           // Material difference (centipawns)
+    int pawn_structure = 0;     // Pawn structure assessment
+    int space = 0;              // Space advantage
+    int development = 0;        // Development difference
+    int initiative = 0;         // Who has the initiative
+    int king_safety = 0;        // King safety comparison
+    int activity = 0;          // Piece activity difference
+    
+    // Detailed pawn structure
+    PawnStructure white_pawns;
+    PawnStructure black_pawns;
+    
+    // Piece activity
+    PieceActivity white_activity;
+    PieceActivity black_activity;
+    
+    // Specific assessments
+    bool white_has_passed_pawn = false;
+    bool black_has_passed_pawn = false;
+    bool white_has_isolated = false;
+    bool black_has_isolated = false;
+    bool white_has_doubled = false;
+    bool black_has_doubled = false;
+    bool white_king_exposed = false;
+    bool black_king_exposed = false;
     
     // Sacrifice assessments
-    bool exchange_sacrifice;      // Rook for minor piece
-    bool pawn_sacrifice;          // Pawn down for development/initiative
-    bool piece_sacrifice;         // Piece for attack
+    bool exchange_sacrifice = false;   // R for minor piece
+    bool pawn_sacrifice = false;        // Pawn for development/initiative
+    bool piece_sacrifice = false;        // Piece for attack
     
-    // Positional discounts (material forgiveness for compensation)
-    int exchange_discount;        // How much R<N/B is "worth" (typically 0-180)
-    int initiative_discount;      // Material worth giving up for initiative
-    int king_safety_discount;      // Material worth less if king exposed
+    // Positional discounts
+    int exchange_discount = 0;          // How much R<N/B is "worth"
+    int initiative_discount = 0;       // Initiative worth
+    int king_safety_discount = 0;       // Exposed king discount
+    
+    // Typical plans detected
+    bool minority_attack = false;       // Minority queenside attack
+    bool open_file = false;             // Has open file
+    bool rook_on_7th = false;           // Rook on 7th rank
+    bool wrong_rook_pawn = false;       // Wrong rook's pawn in endgame
+    
+    // Endgame-specific
+    bool is_endgame = false;           // Is this an endgame?
+    int king_activity_white = 0;        // White king activity
+    int king_activity_black = 0;        // Black king activity
+    int opposition_status = 0;          // 1=white has, -1=black has, 0=none
 };
 
 // Verbal explanation for a move
@@ -51,8 +121,112 @@ struct MoveExplanation {
     std::vector<std::string> move_reasons;      // Why this move is good
     std::vector<std::string> imbalance_notes;   // Overall position assessment
     std::vector<std::string> sacrifice_notes;   // Notes about sacrifices
+    std::vector<std::string> plan_notes;        // Plan descriptions
     std::string pv_explanation;                 // "I play this because..."
 };
+
+// ============================================================================
+// STYLE MANAGEMENT
+// ============================================================================
+
+void setStyle(PlayingStyle style);
+PlayingStyle getStyle();
+const double* getStyleMultipliers();
+
+// ============================================================================
+// PAWN STRUCTURE ANALYSIS
+// ============================================================================
+
+// Check if pawn is isolated (no friendly pawns on adjacent files)
+bool isIsolatedPawn(const Board& b, int color, int sq);
+
+// Check if pawn is doubled (another pawn behind it on same file)
+bool isDoubledPawn(const Board& b, int color, int sq);
+
+// Check if pawn is backward (can't be guarded, exposed to attack)
+bool isBackwardPawn(const Board& b, int color, int sq);
+
+// Check if pawn is passed
+bool isPassedPawn(const Board& b, int color, int sq);
+
+// Check if pawn is a candidate (potentially passed)
+bool isCandidatePawn(const Board& b, int color, int sq);
+
+// Analyze pawn structure for a side
+void analyzePawnStructure(const Board& b, int color, PawnStructure& ps);
+
+// ============================================================================
+// PIECE ACTIVITY ANALYSIS
+// ============================================================================
+
+// Evaluate knight activity
+int evaluateKnight(const Board& b, int color, int sq);
+
+// Evaluate bishop activity
+int evaluateBishop(const Board& b, int color, int sq);
+
+// Evaluate rook activity
+int evaluateRook(const Board& b, int color, int sq);
+
+// Evaluate queen activity
+int evaluateQueen(const Board& b, int color, int sq);
+
+// Analyze piece activity for a side
+void analyzePieceActivity(const Board& b, int color, PieceActivity& pa);
+
+// ============================================================================
+// KING SAFETY ANALYSIS
+// ============================================================================
+
+// Evaluate king safety
+int evaluateKingSafety(const Board& b, int color);
+
+// ============================================================================
+// INITIATIVE AND TEMPO
+// ============================================================================
+
+// Evaluate initiative (who has the initiative)
+int evaluateInitiative(const Board& b, int color);
+
+// ============================================================================
+// TYPICAL PLANS DETECTION
+// ============================================================================
+
+// Detect minority attack (e.g., queenside pawns vs kingside pawns)
+bool detectMinorityAttack(const Board& b, int color);
+
+// Detect if side has open file for rooks
+bool detectOpenFile(const Board& b, int color);
+
+// Detect rook on open file
+bool detectRookOnOpenFile(const Board& b, int color);
+
+// Detect rook on 7th rank
+bool detectRookOn7th(const Board& b, int color);
+
+// ============================================================================
+// ENDGAME PRINCIPLES (SHERESHEVSKY)
+// ============================================================================
+
+// Evaluate king activity in endgame
+int evaluateEndgameKing(const Board& b, int color);
+
+// Check opposition status (distant, diagonal, etc.)
+int evaluateOpposition(const Board& b, int color);
+
+// ============================================================================
+// MATERIAL IMBALANCE
+// ============================================================================
+
+// Detect exchange sacrifice (R for N/B)
+bool detectExchangeSacrifice(const Board& b, int color, int& discount);
+
+// Detect queen for R+N/B
+bool detectQueenTrade(const Board& b, int color, int& discount);
+
+// ============================================================================
+// MAIN EVALUATION FUNCTIONS
+// ============================================================================
 
 // Analyze position imbalances (Silman-style)
 ImbalanceAnalysis analyzeImbalances(const Board& b);
@@ -60,41 +234,37 @@ ImbalanceAnalysis analyzeImbalances(const Board& b);
 // Generate verbal explanation for why a move is good
 MoveExplanation explainMove(const Board& b, int move, const ImbalanceAnalysis& ia);
 
-// Set playing style (affects evaluation weighting)
-enum class PlayingStyle {
-    CLASSICAL,    // Balanced
-    ATTACKING,    // Exaggerate initiative
-    TACTICAL,     // Exaggerate tactics/threats
-    POSITIONAL,   // Exaggerate pawn structure, forgive exchanges
-    TECHNICAL     // Patient, "do not hurry"
-};
-
-void setStyle(PlayingStyle style);
-PlayingStyle getStyle();
-
-// Style multipliers (applied to eval components)
-const double* getStyleMultipliers();
-
 // Endgame principle: "Do not hurry" (Shereshevsky)
 int endgamePatienceBonus(const Board& b, int color);
 
-// Initiative bonus (Sokolov-style strategic sacrifices)
+// Initiative bonus (Sokolov-style)
 int initiativeBonus(const Board& b, int color);
 
 // Prophylaxis assessment (Russian School)
 int prophylaxisBonus(const Board& b, int color);
 
-// Exchange sacrifice assessment
-// Returns positive value if sacrificing the exchange is justified
-int exchangeSacrificeValue(const Board& b, int color);
-
-// Pawn sacrifice assessment
-// Returns positive value if sacrificing a pawn is justified
-int pawnSacrificeValue(const Board& b, int color);
-
 // Calculate positional discounts based on style
-// Returns discounts to material value based on compensation
 void calculatePositionalDiscounts(ImbalanceAnalysis& ia, PlayingStyle style);
+
+// ============================================================================
+// STYLE-SPECIFIC EVALUATION
+// ============================================================================
+
+// Adjust evaluation based on playing style
+int getStyleAdjustedEval(const ImbalanceAnalysis& ia);
+
+// ============================================================================
+// ADDITIONAL EVALUATION FUNCTIONS
+// ============================================================================
+
+// Evaluate control of key squares
+int evaluateKeySquares(const Board& b, int color);
+
+// Evaluate piece coordination
+int evaluatePieceCoordination(const Board& b, int color);
+
+// Prophylactic thinking assessment
+int evaluateProphylaxis(const Board& b, int color);
 
 } // namespace HumanEval
 

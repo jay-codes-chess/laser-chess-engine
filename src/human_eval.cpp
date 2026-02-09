@@ -1,8 +1,5 @@
 /*
-    Human Chess Engine - Teaching Evaluation Implementation
-    Based on Laser by Jeffrey An and Michael An
-    
-    Adds Silman-style imbalances, sacrifice assessments, and teaching explanations.
+    Human Chess Engine - Comprehensive Chess Knowledge Implementation
 */
 
 #include "human_eval.h"
@@ -11,16 +8,16 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <queue>
 
 namespace HumanEval {
 
 static PlayingStyle current_style = PlayingStyle::CLASSICAL;
-
 static double classical_mults[2] = {1.0, 1.0};
-static double attacking_mults[2] = {1.0, 0.8};
-static double tactical_mults[2] = {1.2, 0.8};
-static double positional_mults[2] = {0.8, 1.2};
-static double technical_mults[2] = {0.7, 1.3};
+static double attacking_mults[2] = {1.2, 0.8};
+static double tactical_mults[2] = {1.3, 0.6};
+static double positional_mults[2] = {0.7, 1.3};
+static double technical_mults[2] = {0.6, 1.4};
 
 void setStyle(PlayingStyle style) { current_style = style; }
 PlayingStyle getStyle() { return current_style; }
@@ -35,393 +32,479 @@ const double* getStyleMultipliers() {
     }
 }
 
-// Count pawns of each type for structure assessment
-int countPawns(const Board& b, int color) {
-    uint64_t pawns = b.getPieces(color, PAWNS);
-    int count = 0;
-    while (pawns) {
-        count++;
-        pawns &= pawns - 1;
-    }
-    return count;
-}
+// Knight outpost table
+static const int KNIGHT_OUTPOST[64] = {
+    -5,-5,-5,-5,-5,-5,-5,-5,-5,0,0,0,0,0,0,-5,-5,0,5,5,5,5,0,-5,-5,0,5,10,10,5,0,-5,
+    -5,0,5,10,10,5,0,-5,-5,0,3,5,5,3,0,-5,-5,0,0,0,0,0,0,-5,-5,-5,-5,-5,-5,-5,-5,-5
+};
 
-// Check if pawn is passed
-bool isPassedPawn(const Board& b, int color, int sq) {
-    int file = sq % 8;
-    int rank = sq / 8;
-    uint64_t own_pawns = b.getPieces(color, PAWNS);
-    
-    for (int f = file - 1; f >= 0; f--) {
-        int check_sq = f * 8 + rank;
-        if (own_pawns & (1ULL << check_sq)) return false;
-    }
-    for (int f = file + 1; f < 8; f++) {
-        int check_sq = f * 8 + rank;
-        if (own_pawns & (1ULL << check_sq)) return false;
-    }
-    
-    int capture_rank = (color == WHITE) ? rank + 1 : rank - 1;
-    if (capture_rank >= 0 && capture_rank < 8) {
-        uint64_t capture_mask = 0;
-        if (file > 0) capture_mask |= (1ULL << (file - 1 + capture_rank * 8));
-        if (file < 7) capture_mask |= (1ULL << (file + 1 + capture_rank * 8));
-        if (b.getPieces(1-color, PAWNS) & capture_mask) return false;
-    }
-    return true;
-}
+static const int BISHOP_LONG_DIAGONAL[64] = {
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,0,0,0,0,5,10,10,5,0,0,0,0,5,10,15,5,0,0,
+    0,0,5,10,10,5,0,0,0,0,5,5,5,5,0,0,0,0,0,0,0,0,0,0
+};
 
-// Check if pawn is isolated (no friendly pawns on adjacent files)
-bool isIsolatedPawn(const Board& b, int color, int sq) {
+static const int ROOK_7TH_RANK[64] = {
+    0,0,0,0,0,0,0,0,10,10,10,10,10,10,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+};
+
+// ============================================================================
+// PAWN STRUCTURE
+// ============================================================================
+
+bool isIsolatedPawn(const Board& bd, int color, int sq) {
     int file = sq % 8;
-    int rank = sq / 8;
-    uint64_t own_pawns = b.getPieces(color, PAWNS);
-    
-    // Check adjacent files
+    uint64_t own = bd.getPieces(color, PAWNS);
     if (file > 0) {
-        uint64_t left_file = 0;
-        for (int r = 0; r < 8; r++) left_file |= (1ULL << (file - 1 + r * 8));
-        if (own_pawns & left_file) return false;
+        uint64_t left = 0; for (int r = 0; r < 8; r++) left |= 1ULL << (file - 1 + r * 8);
+        if (own & left) return false;
     }
     if (file < 7) {
-        uint64_t right_file = 0;
-        for (int r = 0; r < 8; r++) right_file |= (1ULL << (file + 1 + r * 8));
-        if (own_pawns & right_file) return false;
+        uint64_t right = 0; for (int r = 0; r < 8; r++) right |= 1ULL << (file + 1 + r * 8);
+        if (own & right) return false;
     }
     return true;
 }
 
-// Analyze Silman-style imbalances
-ImbalanceAnalysis analyzeImbalances(const Board& b) {
+bool isDoubledPawn(const Board& bd, int color, int sq) {
+    int file = sq % 8, rank = sq / 8;
+    uint64_t own = bd.getPieces(color, PAWNS);
+    for (int r = (color == WHITE ? 0 : rank + 1); r < rank; r++)
+        if (own & (1ULL << (file + r * 8))) return true;
+    return false;
+}
+
+bool isBackwardPawn(const Board& bd, int color, int sq) {
+    int file = sq % 8, rank = sq / 8;
+    uint64_t own = bd.getPieces(color, PAWNS);
+    uint64_t opp = bd.getPieces(1-color, PAWNS);
+    int fwd = (color == WHITE) ? 8 : -8;
+    int psq = sq + fwd;
+    if (psq < 0 || psq >= 64) return false;
+    bool prot = false;
+    if (file > 0) { int a = (color == WHITE) ? psq - 1 : psq + 1; if (a >= 0 && (own & (1ULL << a))) prot = true; }
+    if (file < 7) { int a = (color == WHITE) ? psq + 1 : psq - 1; if (a < 64 && (own & (1ULL << a))) prot = true; }
+    uint64_t att = (color == WHITE) ? 
+        ((opp >> 9) & 0xFEFEFEFEFEFEFEFEULL) | ((opp >> 7) & 0x7F7F7F7F7F7F7F7FULL) :
+        ((opp << 9) & 0x7F7F7F7F7F7F7F7FULL) | ((opp << 7) & 0xFEFEFEFEFEFEFEFEULL);
+    return !prot && (att & (1ULL << sq));
+}
+
+bool isPassedPawn(const Board& bd, int color, int sq) {
+    int file = sq % 8, rank = sq / 8;
+    uint64_t own = bd.getPieces(color, PAWNS), opp = bd.getPieces(1-color, PAWNS);
+    for (int f = file - 1; f >= 0; f--) if (own & (1ULL << (f * 8 + rank))) return false;
+    for (int f = file + 1; f < 8; f++) if (own & (1ULL << (f * 8 + rank))) return false;
+    int cr = (color == WHITE) ? rank + 1 : rank - 1;
+    if (cr >= 0 && cr < 8) {
+        uint64_t m = 0; if (file > 0) m |= 1ULL << (file - 1 + cr * 8);
+        if (file < 7) m |= 1ULL << (file + 1 + cr * 8);
+        if (opp & m) return false;
+    }
+    return true;
+}
+
+bool isCandidatePawn(const Board& bd, int color, int sq) {
+    int file = sq % 8, rank = sq / 8;
+    uint64_t own = bd.getPieces(color, PAWNS), opp = bd.getPieces(1-color, PAWNS);
+    int fwd = (color == WHITE) ? 8 : -8;
+    int bs = sq + fwd;
+    if (bs >= 0 && bs < 64 && (own & (1ULL << bs))) return false;
+    int fr = (color == WHITE) ? rank + 1 : rank - 1;
+    if (fr >= 0 && fr < 8) {
+        uint64_t fm = 0; if (file > 0) fm |= 1ULL << (file - 1 + fr * 8);
+        if (file < 7) fm |= 1ULL << (file + 1 + fr * 8);
+        if (opp & fm) {
+            int ar = (color == WHITE) ? rank + 2 : rank - 2;
+            if (ar >= 0 && ar < 8) {
+                uint64_t am = 0; if (file > 0) am |= 1ULL << (file - 1 + ar * 8);
+                if (file < 7) am |= 1ULL << (file + 1 + ar * 8);
+                if (!(opp & am)) return true;
+            }
+        }
+    }
+    return isPassedPawn(bd, color, sq);
+}
+
+void countPawnIslands(const Board& bd, int color, int& islands, int& avg) {
+    uint64_t p = bd.getPieces(color, PAWNS);
+    bool v[64] = {false};
+    std::vector<int> sz;
+    while (p) {
+        int sq = __builtin_ctzll(p); p &= p - 1;
+        if (v[sq]) continue;
+        std::vector<int> c; std::queue<int> q; q.push(sq); v[sq] = true;
+        while (!q.empty()) {
+            int cur = q.front(); q.pop(); c.push_back(cur);
+            int f = cur % 8, r = cur / 8;
+            const int dx[4] = {-1,1,0,0}, dy[4] = {0,0,-1,1};
+            for (int i = 0; i < 4; i++) {
+                int nf = f + dx[i], nr = r + dy[i];
+                if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
+                    int ns = nf + nr * 8;
+                    if ((bd.getPieces(color, PAWNS) & (1ULL << ns)) && !v[ns]) { v[ns] = true; q.push(ns); }
+                }
+            }
+        }
+        if (!c.empty()) sz.push_back(c.size());
+    }
+    islands = sz.size();
+    int t = 0; for (int s : sz) t += s;
+    avg = islands > 0 ? t / islands : 0;
+}
+
+void analyzePawnStructure(const Board& bd, int color, PawnStructure& ps) {
+    uint64_t p = bd.getPieces(color, PAWNS);
+    ps.isolated_count = ps.doubled_count = ps.backward_count = 0;
+    ps.passed_count = ps.candidate_count = 0;
+    ps.island_count = ps.connected_count = ps.phalanx_count = 0;
+    ps.has_chain = false;
+    
+    uint64_t t = p;
+    while (t) {
+        int sq = __builtin_ctzll(t); t &= t - 1;
+        if (isIsolatedPawn(bd, color, sq)) ps.isolated_count++;
+        if (isDoubledPawn(bd, color, sq)) ps.doubled_count++;
+        if (isBackwardPawn(bd, color, sq)) ps.backward_count++;
+        if (isPassedPawn(bd, color, sq)) ps.passed_count++;
+        if (isCandidatePawn(bd, color, sq)) ps.candidate_count++;
+    }
+    ps.connected_count = __builtin_popcountll(p) - ps.isolated_count;
+    countPawnIslands(bd, color, ps.island_count, ps.avg_island_size);
+    
+    t = p;
+    while (t) {
+        int sq = __builtin_ctzll(t); int f = sq % 8; t &= t - 1;
+        if (f < 7 && (p & (1ULL << (sq + 1)))) ps.phalanx_count++;
+    }
+    
+    int minr = 8, maxr = -1;
+    t = p;
+    while (t) {
+        int sq = __builtin_ctzll(t); int r = sq / 8; t &= t - 1;
+        minr = std::min(minr, r); maxr = std::max(maxr, r);
+    }
+    if (maxr - minr >= 2) { ps.has_chain = true; ps.chain_base = (color == WHITE) ? maxr : minr; }
+}
+
+// ============================================================================
+// PIECE ACTIVITY
+// ============================================================================
+
+int evaluateKnight(const Board& bd, int color, int sq) {
+    int s = KNIGHT_OUTPOST[sq];
+    int f = sq % 8, r = sq / 8;
+    return s + (7 - (abs(f - 3) + abs(r - 3))) * 3;
+}
+
+int evaluateBishop(const Board& bd, int color, int sq) {
+    int s = BISHOP_LONG_DIAGONAL[sq];
+    int f = sq % 8, r = sq / 8;
+    s += (7 - (abs(f - 3) + abs(r - 3))) * 3;
+    if (__builtin_popcountll(bd.getPieces(color, BISHOPS)) >= 2) s += 30;
+    return s;
+}
+
+int evaluateRook(const Board& bd, int color, int sq) {
+    int s = 0, f = sq % 8, r = sq / 8;
+    if ((color == WHITE && r == 6) || (color == BLACK && r == 1)) s += ROOK_7TH_RANK[sq];
+    uint64_t pawns = bd.getPieces(color, PAWNS);
+    uint64_t fm = 0; for (int i = 0; i < 8; i++) fm |= 1ULL << (f + i * 8);
+    if (!(pawns & fm)) s += 20;
+    else if (!(pawns & (1ULL << (color == WHITE ? 56 + f : f)))) s += 10;
+    return s;
+}
+
+int evaluateQueen(const Board& bd, int color, int sq) {
+    int f = sq % 8, r = sq / 8;
+    int s = (7 - (abs(f - 3) + abs(r - 3))) * 4;
+    if ((color == WHITE && r > 3) || (color == BLACK && r < 4))
+        if (bd.getPieces(color, KNIGHTS) || bd.getPieces(color, BISHOPS)) s -= 15;
+    return s;
+}
+
+void analyzePieceActivity(const Board& bd, int color, PieceActivity& pa) {
+    pa.total_activity = 0;
+    pa.has_outpost_knight = pa.has_bishop_long_diagonal = false;
+    pa.has_rook_7th_rank = pa.has_rook_open_file = false;
+    
+    uint64_t n = bd.getPieces(color, KNIGHTS);
+    while (n) { int sq = __builtin_ctzll(n); n &= n - 1; 
+        int v = evaluateKnight(bd, color, sq); pa.total_activity += v;
+        if (v > 10) pa.has_outpost_knight = true; }
+    
+    uint64_t bi = bd.getPieces(color, BISHOPS);
+    while (bi) { int sq = __builtin_ctzll(bi); bi &= bi - 1; 
+        int v = evaluateBishop(bd, color, sq); pa.total_activity += v;
+        if (v > 10) pa.has_bishop_long_diagonal = true; }
+    
+    uint64_t r = bd.getPieces(color, ROOKS);
+    while (r) { int sq = __builtin_ctzll(r); r &= r - 1; 
+        int v = evaluateRook(bd, color, sq); pa.total_activity += v;
+        if (v > 15) pa.has_rook_7th_rank = true;
+        if (v >= 20) pa.has_rook_open_file = true; }
+    
+    uint64_t q = bd.getPieces(color, QUEENS);
+    while (q) { int sq = __builtin_ctzll(q); q &= q - 1; 
+        pa.total_activity += evaluateQueen(bd, color, sq); }
+}
+
+// ============================================================================
+// KING SAFETY
+// ============================================================================
+
+int evaluateKingSafety(const Board& bd, int color) {
+    int s = 0, ks = bd.getKingSq(color), f = ks % 8;
+    bool can_castle = (bd.getCastlingRights() & (color == WHITE ? WHITECASTLE : BLACKCASTLE));
+    if (!can_castle) {
+        if ((color == WHITE && ks >= 56) || (color == BLACK && ks <= 7)) s -= 25;
+        uint64_t pawns = bd.getPieces(color, PAWNS);
+        if (color == WHITE) { if (pawns & (1ULL << 5)) s += 5; if (pawns & (1ULL << 6)) s += 5; }
+        else { if (pawns & (1ULL << 61)) s += 5; if (pawns & (1ULL << 62)) s += 5; }
+        if (f <= 1 || f >= 6) s -= 10;
+    } else s += 20;
+    return s;
+}
+
+// ============================================================================
+// INITIATIVE
+// ============================================================================
+
+int evaluateInitiative(const Board& bd, int color) {
+    int s = (bd.getPlayerToMove() == color) ? 10 : 0;
+    uint64_t br = (color == WHITE) ? (0xFFULL << 56) | 0xFFULL : 0xFFULL;
+    uint64_t act = (bd.getPieces(color, KNIGHTS) | bd.getPieces(color, BISHOPS) |
+                    bd.getPieces(color, ROOKS) | bd.getPieces(color, QUEENS)) & ~br;
+    s += __builtin_popcountll(act) * 5;
+    uint64_t pawns = bd.getPieces(color, PAWNS);
+    for (int f = 0; f < 8; f++) {
+        uint64_t fm = 0; for (int rk = 0; rk < 8; rk++) fm |= 1ULL << (f + rk * 8);
+        if (!(pawns & fm)) s += 3;
+    }
+    return s;
+}
+
+// ============================================================================
+// TYPICAL PLANS
+// ============================================================================
+
+bool detectMinorityAttack(const Board& bd, int color) {
+    uint64_t p = bd.getPieces(color, PAWNS);
+    uint64_t qs = 0, ks = 0;
+    for (int r = 0; r < 8; r++) { qs |= 1ULL << (0 + r * 8); qs |= 1ULL << (1 + r * 8); qs |= 1ULL << (2 + r * 8);
+        ks |= 1ULL << (5 + r * 8); ks |= 1ULL << (6 + r * 8); ks |= 1ULL << (7 + r * 8); }
+    int qsc = __builtin_popcountll(p & qs), ksc = __builtin_popcountll(p & ks);
+    return qsc <= 2 && qsc < ksc;
+}
+
+bool detectRookOnOpenFile(const Board& bd, int color) {
+    uint64_t r = bd.getPieces(color, ROOKS), p = bd.getPieces(color, PAWNS);
+    for (int f = 0; f < 8; f++) {
+        uint64_t fm = 0; for (int rk = 0; rk < 8; rk++) fm |= 1ULL << (f + rk * 8);
+        if (!(p & fm) && (r & fm)) return true;
+    }
+    return false;
+}
+
+bool detectRookOn7th(const Board& bd, int color) {
+    uint64_t r = bd.getPieces(color, ROOKS);
+    int rank = (color == WHITE) ? 6 : 1;
+    for (int f = 0; f < 8; f++) if (r & (1ULL << (f + rank * 8))) return true;
+    return false;
+}
+
+// ============================================================================
+// ENDGAME
+// ============================================================================
+
+int evaluateEndgameKing(const Board& bd, int color) {
+    int ks = bd.getKingSq(color), oks = bd.getKingSq(1-color);
+    int kf = ks % 8, kr = ks / 8, okf = oks % 8, okr = oks / 8;
+    int d = abs(kf - 3) + abs(kr - 3);
+    int od = abs(okf - 3) + abs(okr - 3);
+    return (d < od) ? (od - d) * 8 : 0;
+}
+
+int evaluateOpposition(const Board& bd, int color) {
+    int ks = bd.getKingSq(color), oks = bd.getKingSq(1-color);
+    int diff = abs((ks % 8) - (oks % 8)) + abs((ks / 8) - (oks / 8));
+    return (diff > 0 && diff % 2 == 0) ? ((color == WHITE) ? 1 : -1) : 0;
+}
+
+bool detectExchangeSacrifice(const Board& bd, int color, int& discount) {
+    int r = __builtin_popcountll(bd.getPieces(color, ROOKS));
+    int or_ = __builtin_popcountll(bd.getPieces(1-color, ROOKS));
+    int m = __builtin_popcountll(bd.getPieces(color, KNIGHTS)) + __builtin_popcountll(bd.getPieces(color, BISHOPS));
+    int om = __builtin_popcountll(bd.getPieces(1-color, KNIGHTS)) + __builtin_popcountll(bd.getPieces(1-color, BISHOPS));
+    if (r < or_ && m > om) { discount = (or_ - r) * 500 - (m - om) * 330; return true; }
+    return false;
+}
+
+// ============================================================================
+// MAIN EVALUATION
+// ============================================================================
+
+ImbalanceAnalysis analyzeImbalances(const Board& bd) {
     ImbalanceAnalysis ia = {};
     
-    // Material using public methods
-    int piece_values[5] = {100, 320, 330, 500, 900};  // P, N, B, R, Q
+    int pv[5] = {100, 320, 330, 500, 900};
     for (int pt = 0; pt < 5; pt++) {
-        int white_count = __builtin_popcountll(b.getPieces(WHITE, pt + 1));
-        int black_count = __builtin_popcountll(b.getPieces(BLACK, pt + 1));
-        ia.material += (white_count - black_count) * piece_values[pt];
+        int w = __builtin_popcountll(bd.getPieces(WHITE, pt + 1));
+        int bl = __builtin_popcountll(bd.getPieces(BLACK, pt + 1));
+        ia.material += (w - bl) * pv[pt];
     }
     
-    // Pawn structure assessment
-    uint64_t white_pawns = b.getPieces(WHITE, PAWNS);
-    uint64_t black_pawns = b.getPieces(BLACK, PAWNS);
+    analyzePawnStructure(bd, WHITE, ia.white_pawns);
+    analyzePawnStructure(bd, BLACK, ia.black_pawns);
     
-    // Passed pawns
-    uint64_t temp = white_pawns;
-    while (temp) {
-        int sq = __builtin_ctzll(temp);
-        if (isPassedPawn(b, WHITE, sq)) {
-            ia.white_has_passed_pawn = true;
-            ia.pawn_structure += 30;
-        }
-        if (isIsolatedPawn(b, WHITE, sq)) {
-            ia.white_has_isolated = true;
-            ia.pawn_structure -= 20;
-        }
-        temp &= temp - 1;
+    ia.pawn_structure += ia.white_pawns.passed_count * 30 - ia.black_pawns.passed_count * 30;
+    ia.pawn_structure -= ia.white_pawns.isolated_count * 25 + ia.black_pawns.isolated_count * 25;
+    ia.pawn_structure -= ia.white_pawns.backward_count * 20 + ia.black_pawns.backward_count * 20;
+    ia.pawn_structure -= ia.white_pawns.doubled_count * 15 + ia.black_pawns.doubled_count * 15;
+    ia.pawn_structure += (ia.black_pawns.island_count - ia.white_pawns.island_count) * 10;
+    
+    analyzePieceActivity(bd, WHITE, ia.white_activity);
+    analyzePieceActivity(bd, BLACK, ia.black_activity);
+    ia.activity = ia.white_activity.total_activity - ia.black_activity.total_activity;
+    
+    uint64_t wm = bd.getPieces(WHITE, PAWNS) | bd.getPieces(WHITE, KNIGHTS) | bd.getPieces(WHITE, BISHOPS) |
+                  bd.getPieces(WHITE, ROOKS) | bd.getPieces(WHITE, QUEENS) | bd.getPieces(WHITE, KINGS);
+    uint64_t bm = bd.getPieces(BLACK, PAWNS) | bd.getPieces(BLACK, KNIGHTS) | bd.getPieces(BLACK, BISHOPS) |
+                  bd.getPieces(BLACK, ROOKS) | bd.getPieces(BLACK, QUEENS) | bd.getPieces(BLACK, KINGS);
+    int ws = 0, bs = 0;
+    for (int sq = 0; sq < 32; sq++) { if (wm & (1ULL << sq)) ws++; if (bm & (1ULL << (sq + 32))) bs++; }
+    ia.space = (ws - bs) * 5;
+    
+    uint64_t wnp = bd.getPieces(WHITE, KNIGHTS) | bd.getPieces(WHITE, BISHOPS) | bd.getPieces(WHITE, ROOKS) | bd.getPieces(WHITE, QUEENS);
+    uint64_t bnp = bd.getPieces(BLACK, KNIGHTS) | bd.getPieces(BLACK, BISHOPS) | bd.getPieces(BLACK, ROOKS) | bd.getPieces(BLACK, QUEENS);
+    uint64_t wbr = (0xFFULL << 56) | 0xFFULL;
+    uint64_t bbr = 0xFFULL;
+    int wd = __builtin_popcountll(wnp & ~wbr);
+    int bd_dev = __builtin_popcountll(bnp & ~bbr);
+    ia.development = (wd - bd_dev) * 30;
+    
+    ia.initiative = (bd.getPlayerToMove() == WHITE) ? 10 : -10;
+    ia.initiative += evaluateInitiative(bd, WHITE) - evaluateInitiative(bd, BLACK);
+    
+    ia.king_safety = evaluateKingSafety(bd, WHITE) - evaluateKingSafety(bd, BLACK);
+    
+    ia.white_king_exposed = !(bd.getCastlingRights() & WHITECASTLE) && bd.getKingSq(WHITE) >= 56;
+    ia.black_king_exposed = !(bd.getCastlingRights() & BLACKCASTLE) && bd.getKingSq(BLACK) <= 7;
+    ia.white_has_passed_pawn = ia.white_pawns.passed_count > 0;
+    ia.black_has_passed_pawn = ia.black_pawns.passed_count > 0;
+    ia.white_has_isolated = ia.white_pawns.isolated_count > 0;
+    ia.black_has_isolated = ia.black_pawns.isolated_count > 0;
+    ia.white_has_doubled = ia.white_pawns.doubled_count > 0;
+    ia.black_has_doubled = ia.black_pawns.doubled_count > 0;
+    
+    if (detectExchangeSacrifice(bd, WHITE, ia.exchange_discount)) ia.exchange_sacrifice = true;
+    if (detectExchangeSacrifice(bd, BLACK, ia.exchange_discount)) { ia.exchange_sacrifice = true; ia.exchange_discount = -ia.exchange_discount; }
+    
+    ia.minority_attack = detectMinorityAttack(bd, WHITE);
+    ia.open_file = detectRookOnOpenFile(bd, WHITE);
+    ia.rook_on_7th = detectRookOn7th(bd, WHITE);
+    
+    ia.is_endgame = ia.material < 2500;
+    if (ia.is_endgame) {
+        ia.king_activity_white = evaluateEndgameKing(bd, WHITE);
+        ia.king_activity_black = evaluateEndgameKing(bd, BLACK);
+        ia.opposition_status = evaluateOpposition(bd, WHITE);
     }
     
-    temp = black_pawns;
-    while (temp) {
-        int sq = __builtin_ctzll(temp);
-        if (isPassedPawn(b, BLACK, sq)) {
-            ia.black_has_passed_pawn = true;
-            ia.pawn_structure -= 30;
-        }
-        if (isIsolatedPawn(b, BLACK, sq)) {
-            ia.black_has_isolated = true;
-            ia.pawn_structure += 20;
-        }
-        temp &= temp - 1;
-    }
-    
-    // Space using public methods
-    uint64_t white_piece_mask = b.getPieces(WHITE, PAWNS) | b.getPieces(WHITE, KNIGHTS) | 
-                               b.getPieces(WHITE, BISHOPS) | b.getPieces(WHITE, ROOKS) |
-                               b.getPieces(WHITE, QUEENS) | b.getPieces(WHITE, KINGS);
-    uint64_t black_piece_mask = b.getPieces(BLACK, PAWNS) | b.getPieces(BLACK, KNIGHTS) | 
-                               b.getPieces(BLACK, BISHOPS) | b.getPieces(BLACK, ROOKS) |
-                               b.getPieces(BLACK, QUEENS) | b.getPieces(BLACK, KINGS);
-    
-    int white_space = 0, black_space = 0;
-    for (int sq = 0; sq < 32; sq++) {
-        if (white_piece_mask & (1ULL << sq)) white_space++;
-        if (black_piece_mask & (1ULL << (sq + 32))) black_space++;
-    }
-    ia.space = (white_space - black_space) * 5;
-    
-    // Development
-    uint64_t white_non_pawns = b.getPieces(WHITE, KNIGHTS) | b.getPieces(WHITE, BISHOPS) |
-                              b.getPieces(WHITE, ROOKS) | b.getPieces(WHITE, QUEENS);
-    uint64_t black_non_pawns = b.getPieces(BLACK, KNIGHTS) | b.getPieces(BLACK, BISHOPS) |
-                              b.getPieces(BLACK, ROOKS) | b.getPieces(BLACK, QUEENS);
-    
-    uint64_t white_back_rank = (0xFFULL << 56) | 0xFFULL;
-    uint64_t black_back_rank = 0xFFULL;
-    
-    int white_dev = __builtin_popcountll(white_non_pawns & ~white_back_rank);
-    int black_dev = __builtin_popcountll(black_non_pawns & ~black_back_rank);
-    ia.development = (white_dev - black_dev) * 30;
-    
-    // Initiative
-    ia.initiative = (b.getPlayerToMove() == WHITE) ? 10 : -10;
-    
-    // King safety
-    if (!(b.getCastlingRights() & WHITECASTLE)) {
-        ia.white_king_exposed = (b.getKingSq(WHITE) >= 56);
-        ia.king_safety -= 30;
-    }
-    if (!(b.getCastlingRights() & BLACKCASTLE)) {
-        ia.black_king_exposed = (b.getKingSq(BLACK) <= 7);
-        ia.king_safety += 30;
-    }
-    
-    // Exchange sacrifice assessment (Rook vs Minor)
-    // Check if one side has R+N/B vs Q or similar imbalances
-    int white_rooks = __builtin_popcountll(b.getPieces(WHITE, ROOKS));
-    int black_rooks = __builtin_popcountll(b.getPieces(BLACK, ROOKS));
-    int white_minors = __builtin_popcountll(b.getPieces(WHITE, KNIGHTS)) + 
-                       __builtin_popcountll(b.getPieces(WHITE, BISHOPS));
-    int black_minors = __builtin_popcountll(b.getPieces(BLACK, KNIGHTS)) + 
-                       __builtin_popcountll(b.getPieces(BLACK, BISHOPS));
-    
-    // Exchange sacrifice detection
-    if (white_rooks < black_rooks && white_minors > black_minors) {
-        ia.exchange_sacrifice = true;
-        ia.exchange_discount = -180;  // R for N/B typical discount
-    }
-    if (black_rooks < white_rooks && black_minors > white_minors) {
-        ia.exchange_sacrifice = true;
-        ia.exchange_discount = 180;
-    }
-    
-    // Pawn sacrifice assessment (pawn down for development/initiative)
-    int white_pawns_count = __builtin_popcountll(white_pawns);
-    int black_pawns_count = __builtin_popcountll(black_pawns);
-    if (white_pawns_count < black_pawns_count && ia.development > 30) {
-        ia.pawn_sacrifice = true;
-    }
-    if (black_pawns_count < white_pawns_count && ia.development < -30) {
-        ia.pawn_sacrifice = true;
-    }
-    
-    // Calculate positional discounts based on style
     calculatePositionalDiscounts(ia, current_style);
     
     return ia;
 }
 
-// Calculate positional discounts (material forgiveness for compensation)
 void calculatePositionalDiscounts(ImbalanceAnalysis& ia, PlayingStyle style) {
-    // Exchange discount varies by style
     switch (style) {
-        case PlayingStyle::CLASSICAL:
-            ia.exchange_discount = ia.exchange_discount;  // Normal
-            break;
         case PlayingStyle::ATTACKING:
-        case PlayingStyle::TACTICAL:
-            ia.exchange_discount = ia.exchange_discount * 2;  // Forgive more
-            ia.initiative_discount = 50;  // Initiative worth 50 centipawns
-            break;
+        case PlayingStyle::TACTICAL: ia.exchange_discount *= 2; ia.initiative_discount = 50; break;
         case PlayingStyle::POSITIONAL:
-        case PlayingStyle::TECHNICAL:
-            ia.exchange_discount = ia.exchange_discount / 2;  // Forgive less
-            break;
+        case PlayingStyle::TECHNICAL: ia.exchange_discount /= 2; break;
+        default: break;
     }
-    
-    // King safety discount - exposed king = material worth less
-    if (ia.black_king_exposed) {
-        ia.king_safety_discount = 50;  // Black's material worth 50 less
-    }
-    if (ia.white_king_exposed) {
-        ia.king_safety_discount = -50;
-    }
+    if (ia.black_king_exposed) ia.king_safety_discount = 50;
+    if (ia.white_king_exposed) ia.king_safety_discount = -50;
 }
 
-// Exchange sacrifice value - positive means sacrifice is justified
-int exchangeSacrificeValue(const Board& b, int color) {
-    ImbalanceAnalysis ia = analyzeImbalances(b);
-    int value = 0;
-    
-    // Factors favoring exchange sacrifice:
-    // 1. Open lines toward enemy king
-    // 2. Opponent's king exposed
-    // 3. Good minor piece coordination
-    // 4. Closed position (minor pieces better)
-    
-    uint64_t opp_king = b.getPieces(1-color, KINGS);
-    int opp_king_sq = __builtin_ctzll(opp_king);
-    
-    // Open lines toward opponent
-    if (b.getPieces(color, ROOKS) & 0xFFULL) {  // Rook on 1st rank
-        value += 30;
-    }
-    
-    // King exposed
-    if ((1-color == WHITE && opp_king_sq >= 56) || (1-color == BLACK && opp_king_sq <= 7)) {
-        value += 50;
-    }
-    
-    return value;
-}
-
-// Pawn sacrifice value - positive means pawn sacrifice is justified
-int pawnSacrificeValue(const Board& b, int color) {
-    int value = 0;
-    
-    // Pawn sacrifice is good for:
-    // 1. Development advantage
-    // 2. Initiative
-    // 3. Open lines
-    
-    ImbalanceAnalysis ia = analyzeImbalances(b);
-    
-    if (color == WHITE) {
-        if (ia.development > 30) value += 20;
-        if (ia.initiative > 0) value += 30;
-        if (ia.space > 20) value += 20;
-    } else {
-        if (ia.development < -30) value += 20;
-        if (ia.initiative < 0) value += 30;
-        if (ia.space < -20) value += 20;
-    }
-    
-    return value;
-}
-
-// Generate verbal explanation for a move
-MoveExplanation explainMove(const Board& b, int move, const ImbalanceAnalysis& ia) {
+MoveExplanation explainMove(const Board& bd, int move, const ImbalanceAnalysis& ia) {
     MoveExplanation exp = {};
+    std::stringstream ss;
     
-    // Material-based reasons
-    if (ia.material > 200) {
-        exp.imbalance_notes.push_back("Material +" + std::to_string(ia.material/100) + ".0");
-    } else if (ia.material < -200) {
-        exp.imbalance_notes.push_back("Material " + std::to_string(ia.material/100) + ".0");
-    }
-    
-    // Pawn structure reasons
-    if (ia.white_has_passed_pawn) exp.imbalance_notes.push_back("Passed pawn");
-    if (ia.black_has_passed_pawn) exp.imbalance_notes.push_back("Opponent passed pawn");
-    if (ia.white_has_isolated) exp.imbalance_notes.push_back("Isolated pawn (weakness)");
-    if (ia.black_has_isolated) exp.imbalance_notes.push_back("Opponent isolated pawn");
-    
-    // Exchange sacrifice
-    if (ia.exchange_sacrifice) {
-        std::stringstream ss;
-        ss << "Exchange sacrifice (" << (ia.exchange_discount < 0 ? "+" : "-") 
-           << abs(ia.exchange_discount) << ")";
-        exp.sacrifice_notes.push_back(ss.str());
-        exp.imbalance_notes.push_back("R for minor piece");
-    }
-    
-    // Initiative
-    if (ia.initiative > 15) {
-        exp.imbalance_notes.push_back("Strong initiative");
-        exp.move_reasons.push_back("Maintaining initiative");
-    }
-    
-    // King safety
-    if (ia.white_king_exposed) {
-        exp.imbalance_notes.push_back("King safety concern");
-        exp.move_reasons.push_back("Kingside needs attention");
-    }
-    if (ia.black_king_exposed) {
-        exp.imbalance_notes.push_back("Opposing king exposed");
-        exp.move_reasons.push_back("Attack the exposed king");
-    }
-    
-    // Space
-    if (ia.space > 30) exp.move_reasons.push_back("More space for pieces");
-    if (ia.space < -30) exp.move_reasons.push_back("Less space - expand");
-    
-    // Development
+    if (ia.material > 100) { ss << "Mat +" << ia.material/100 << ".0"; exp.imbalance_notes.push_back(ss.str()); }
+    if (ia.material < -100) { ss << "Mat " << ia.material/100 << ".0"; exp.imbalance_notes.push_back(ss.str()); }
+    if (ia.white_pawns.passed_count > 0) exp.imbalance_notes.push_back("Passed pawn");
+    if (ia.black_pawns.passed_count > 0) exp.imbalance_notes.push_back("Opp passed pawn");
+    if (ia.white_pawns.isolated_count > 0) exp.imbalance_notes.push_back("Isolani");
+    if (ia.black_pawns.isolated_count > 0) exp.imbalance_notes.push_back("Opp isolani");
+    if (ia.exchange_sacrifice) { ss.str(""); ss << "R for minor"; exp.sacrifice_notes.push_back(ss.str()); }
+    if (ia.initiative > 15) { exp.imbalance_notes.push_back("Strong initiative"); exp.move_reasons.push_back("Maintain initiative"); }
+    if (ia.white_king_exposed) { exp.imbalance_notes.push_back("King safety concern"); exp.move_reasons.push_back("Defend king"); }
+    if (ia.black_king_exposed) { exp.imbalance_notes.push_back("Opp king exposed"); exp.move_reasons.push_back("Attack!"); }
+    if (ia.minority_attack) exp.plan_notes.push_back("Minority attack");
+    if (ia.open_file) exp.plan_notes.push_back("Open file");
+    if (ia.rook_on_7th) exp.plan_notes.push_back("7th rank");
     if (ia.development > 60) exp.move_reasons.push_back("Better development");
-    if (ia.development < -60) exp.move_reasons.push_back("Underdeveloped");
+    if (ia.is_endgame && ia.king_activity_white > ia.king_activity_black) exp.imbalance_notes.push_back("Active king");
+    if (ia.opposition_status > 0) exp.plan_notes.push_back("Have opposition");
+    if (ia.opposition_status < 0) exp.plan_notes.push_back("Opp has opposition");
     
-    // Pawn sacrifice
-    if (ia.pawn_sacrifice) {
-        exp.sacrifice_notes.push_back("Pawn sacrifice for development");
-    }
-    
-    // Generate PV explanation string
     exp.pv_explanation = "";
-    
-    // Add sacrifice notes first
-    for (size_t i = 0; i < exp.sacrifice_notes.size(); i++) {
-        if (!exp.pv_explanation.empty()) exp.pv_explanation += " | ";
-        exp.pv_explanation += exp.sacrifice_notes[i];
-    }
-    
-    // Then move reasons
-    for (size_t i = 0; i < exp.move_reasons.size(); i++) {
-        if (!exp.pv_explanation.empty()) exp.pv_explanation += " | ";
-        exp.pv_explanation += exp.move_reasons[i];
-    }
-    
-    if (exp.pv_explanation.empty()) {
-        if (!exp.imbalance_notes.empty()) {
-            exp.pv_explanation = exp.imbalance_notes[0];
-        } else {
-            exp.pv_explanation = "Developing move";
+    auto add_vec = [&](const std::vector<std::string>& v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            if (!exp.pv_explanation.empty()) exp.pv_explanation += " | ";
+            exp.pv_explanation += v[i];
         }
-    }
-    
+    };
+    add_vec(exp.sacrifice_notes); add_vec(exp.plan_notes); add_vec(exp.move_reasons); add_vec(exp.imbalance_notes);
+    if (exp.pv_explanation.empty()) exp.pv_explanation = "Developing move";
     return exp;
 }
 
-// Endgame principle: "Do not hurry" (Shereshevsky)
-int endgamePatienceBonus(const Board& b, int color) {
-    int total_material = 0;
-    int piece_values[5] = {100, 320, 330, 500, 900};
-    for (int pt = 0; pt < 5; pt++) {
-        total_material += __builtin_popcountll(b.getPieces(0, pt + 1)) * piece_values[pt];
-        total_material += __builtin_popcountll(b.getPieces(1, pt + 1)) * piece_values[pt];
+int endgamePatienceBonus(const Board& bd, int color) {
+    int mat = 0, pv[5] = {100, 320, 330, 500, 900};
+    for (int pt = 0; pt < 5; pt++) { 
+        mat += __builtin_popcountll(bd.getPieces(0, pt + 1)) * pv[pt]; 
+        mat += __builtin_popcountll(bd.getPieces(1, pt + 1)) * pv[pt]; 
     }
-    if (total_material > 2500) return 0;
-    
-    int king_sq = b.getKingSq(color);
-    int opp_king_sq = b.getKingSq(1-color);
-    int king_file = king_sq % 8;
-    int king_rank = king_sq / 8;
-    int opp_king_file = opp_king_sq % 8;
-    int opp_king_rank = opp_king_sq / 8;
-    
-    int dist_to_center = abs(king_file - 3) + abs(king_rank - 3);
-    int opp_dist_to_center = abs(opp_king_file - 3) + abs(opp_king_rank - 3);
-    
-    int bonus = 0;
-    if (dist_to_center < opp_dist_to_center) {
-        bonus += (opp_dist_to_center - dist_to_center) * 5;
-    }
-    
-    int rank_diff = abs(king_rank - opp_king_rank);
-    int file_diff = abs(king_file - opp_king_file);
-    if ((rank_diff + file_diff) % 2 == 0 && (rank_diff + file_diff) > 0) {
-        bonus += 15;
-    }
+    if (mat > 2500) return 0;
+    int ks = bd.getKingSq(color), oks = bd.getKingSq(1-color);
+    int d = abs((ks % 8) - 3) + abs((ks / 8) - 3);
+    int od = abs((oks % 8) - 3) + abs((oks / 8) - 3);
+    int bonus = (d < od) ? (od - d) * 5 : 0;
+    int diff = abs((ks / 8) - (oks / 8)) + abs((ks % 8) - (oks % 8));
+    if (diff > 0 && diff % 2 == 0) bonus += 15;
     return bonus;
 }
 
-// Initiative bonus (Sokolov-style)
-int initiativeBonus(const Board& b, int color) {
-    int bonus = 0;
-    if (b.getPlayerToMove() == color) bonus += 10;
-    
-    uint64_t color_pieces = b.getPieces(color, KNIGHTS) | b.getPieces(color, BISHOPS) |
-                           b.getPieces(color, ROOKS) | b.getPieces(color, QUEENS);
-    int active_pieces = __builtin_popcountll(color_pieces);
-    bonus += active_pieces * 5;
-    return bonus;
+int initiativeBonus(const Board& bd, int color) {
+    int b = (bd.getPlayerToMove() == color) ? 10 : 0;
+    b += __builtin_popcountll((bd.getPieces(color, KNIGHTS) | bd.getPieces(color, BISHOPS) | bd.getPieces(color, ROOKS) | bd.getPieces(color, QUEENS))) * 5;
+    return b;
 }
 
-// Prophylaxis assessment (Russian School)
-int prophylaxisBonus(const Board& b, int color) {
-    uint64_t opp_pawns = b.getPieces(1-color, PAWNS);
-    int file_a = __builtin_popcountll(opp_pawns & 0x0101010101010101ULL);
-    int file_h = __builtin_popcountll(opp_pawns & 0x8080808080808080ULL);
-    return (file_a == 0 || file_h == 0) ? 10 : 0;
+int prophylaxisBonus(const Board& bd, int color) {
+    uint64_t opp = bd.getPieces(1-color, PAWNS);
+    int fa = __builtin_popcountll(opp & 0x0101010101010101ULL);
+    int fh = __builtin_popcountll(opp & 0x8080808080808080ULL);
+    return (fa == 0 || fh == 0) ? 10 : 0;
+}
+
+int exchangeSacrificeValue(const Board& bd, int color) {
+    int v = 0;
+    int ks = bd.getKingSq(1-color);
+    if ((bd.getPieces(color, ROOKS) & 0xFFULL)) v += 30;
+    if ((1-color == WHITE && ks >= 56) || (1-color == BLACK && ks <= 7)) v += 50;
+    return v;
+}
+
+int pawnSacrificeValue(const Board& bd, int color) {
+    ImbalanceAnalysis ia = analyzeImbalances(bd);
+    int v = 0;
+    if (color == WHITE) { if (ia.development > 30) v += 20; if (ia.initiative > 0) v += 30; if (ia.space > 20) v += 20; }
+    else { if (ia.development < -30) v += 20; if (ia.initiative < 0) v += 30; if (ia.space < -20) v += 20; }
+    return v;
 }
 
 } // namespace HumanEval
