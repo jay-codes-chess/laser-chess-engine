@@ -314,6 +314,114 @@ bool detectRookOn7th(const Board& bd, int color) {
 }
 
 // ============================================================================
+// ATTACKING PATTERNS - PAWN STORM
+// ============================================================================
+
+// Detect opposite castling (white kingside, black queenside or vice versa)
+bool detectOppositeCastling(const Board& bd) {
+    // White castled kingside: king on g1/h1, rooks on f1/h1 or moved
+    bool white_kside = !(bd.getCastlingRights() & WHITEQSIDE);
+    // Black castled queenside: king on c8/b8, rooks on a8/c8 or moved  
+    bool black_qside = !(bd.getCastlingRights() & BLACKKSIDE);
+    
+    // White castled queenside, black castled kingside
+    bool white_qside = !(bd.getCastlingRights() & WHITEKSIDE);
+    bool black_kside = !(bd.getCastlingRights() & BLACKQSIDE);
+    
+    return (white_kside && black_qside) || (white_qside && black_kside);
+}
+
+// Count pawns that can advance toward enemy king
+int countPawnStorm(const Board& bd, int color) {
+    uint64_t pawns = bd.getPieces(color, PAWNS);
+    int storm_count = 0;
+    
+    int king_sq = bd.getKingSq(1-color);
+    int kf = king_sq % 8;
+    int kr = king_sq / 8;
+    
+    // For white storming black's king, look at f,g,h pawns advancing
+    // For black storming white's king, look at f,g,h pawns advancing
+    
+    uint64_t temp = pawns;
+    while (temp) {
+        int sq = __builtin_ctzll(temp);
+        temp &= temp - 1;
+        
+        int file = sq % 8;
+        int rank = sq / 8;
+        
+        if (color == WHITE) {
+            // White pawns that can advance toward black king
+            // g2, h2, f2, g3, h3, f3 can storm
+            if ((file >= 5 && file <= 7) || (file >= 5 && file <= 7 && rank >= 2)) {
+                int advance = 0;
+                if (file == 5) { // f-pawn
+                    if (rank == 1 && !(bd.getPieces(WHITE, PAWNS) & (1ULL << (5 + 2 * 8)))) advance = 3; // f2
+                    else if (rank == 2) advance = 2; // f3
+                } else if (file == 6) { // g-pawn
+                    if (rank == 1 && !(bd.getPieces(WHITE, PAWNS) & (1ULL << (6 + 2 * 8)))) advance = 4; // g2
+                    else if (rank == 2) advance = 3; // g3
+                } else if (file == 7) { // h-pawn
+                    if (rank == 1 && !(bd.getPieces(WHITE, PAWNS) & (1ULL << (7 + 2 * 8)))) advance = 3; // h2
+                    else if (rank == 2) advance = 2; // h3
+                }
+                storm_count += advance;
+            }
+        } else {
+            // Black pawns that can advance toward white king
+            // f7, g7, h7, f6, g6, h6
+            if ((file >= 5 && file <= 7) || (file >= 5 && file <= 7 && rank <= 5)) {
+                int advance = 0;
+                if (file == 5) { // f-pawn
+                    if (rank == 6 && !(bd.getPieces(BLACK, PAWNS) & (1ULL << (5 + 5 * 8)))) advance = 3; // f7
+                    else if (rank == 5) advance = 2; // f6
+                } else if (file == 6) { // g-pawn
+                    if (rank == 6 && !(bd.getPieces(BLACK, PAWNS) & (1ULL << (6 + 5 * 8)))) advance = 4; // g7
+                    else if (rank == 5) advance = 3; // g6
+                } else if (file == 7) { // h-pawn
+                    if (rank == 6 && !(bd.getPieces(BLACK, PAWNS) & (1ULL << (7 + 5 * 8)))) advance = 3; // h7
+                    else if (rank == 5) advance = 2; // h6
+                }
+                storm_count += advance;
+            }
+        }
+    }
+    
+    return storm_count;
+}
+
+// Evaluate pawn storm potential
+int evaluatePawnStorm(const Board& bd, int color) {
+    if (!detectOppositeCastling(bd)) return 0;
+    
+    // Count storming pawns
+    int storm = countPawnStorm(bd, color);
+    
+    // Bonus for having the pawn storm
+    return storm * 5;
+}
+
+// Detect if king is vulnerable to pawn storm
+bool isKingVulnerableToStorm(const Board& bd, int color) {
+    if (!detectOppositeCastling(bd)) return false;
+    
+    int king_sq = bd.getKingSq(color);
+    int file = king_sq % 8;
+    
+    // King on g/h files (kingside) is vulnerable to queenside pawn storm
+    // King on a/b files (queenside) is vulnerable to kingside pawn storm
+    
+    if (color == WHITE) {
+        // White king vulnerable if castled queenside (a1/b1) and black has kingside pawns
+        return (file <= 1 || king_sq >= 56);
+    } else {
+        // Black king vulnerable if castled queenside (a8/b8) and white has kingside pawns
+        return (file <= 1 || king_sq <= 7);
+    }
+}
+
+// ============================================================================
 // ENDGAME
 // ============================================================================
 
@@ -411,6 +519,17 @@ ImbalanceAnalysis analyzeImbalances(const Board& bd) {
         ia.opposition_status = evaluateOpposition(bd, WHITE);
     }
     
+    // Pawn storm detection (opposite castling)
+    ia.opposite_castling = detectOppositeCastling(bd);
+    if (ia.opposite_castling) {
+        ia.pawn_storm = true;
+        ia.pawn_storm_strength = evaluatePawnStorm(bd, WHITE) - evaluatePawnStorm(bd, BLACK);
+        ia.king_safety_discount = 0;
+        // King vulnerable to storm?
+        if (isKingVulnerableToStorm(bd, WHITE)) ia.king_safety_discount -= 30;
+        if (isKingVulnerableToStorm(bd, BLACK)) ia.king_safety_discount += 30;
+    }
+    
     calculatePositionalDiscounts(ia, current_style);
     
     return ia;
@@ -449,6 +568,10 @@ MoveExplanation explainMove(const Board& bd, int move, const ImbalanceAnalysis& 
     if (ia.is_endgame && ia.king_activity_white > ia.king_activity_black) exp.imbalance_notes.push_back("Active king");
     if (ia.opposition_status > 0) exp.plan_notes.push_back("Have opposition");
     if (ia.opposition_status < 0) exp.plan_notes.push_back("Opp has opposition");
+    if (ia.opposite_castling) exp.plan_notes.push_back("Opposite castling");
+    if (ia.pawn_storm) exp.plan_notes.push_back("Pawn storm");
+    if (ia.king_safety_discount < -10) exp.imbalance_notes.push_back("King exposed to storm");
+    if (ia.king_safety_discount > 10) exp.imbalance_notes.push_back("Opp king exposed to storm");
     
     exp.pv_explanation = "";
     auto add_vec = [&](const std::vector<std::string>& v) {

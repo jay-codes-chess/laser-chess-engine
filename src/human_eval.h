@@ -108,6 +108,9 @@ struct ImbalanceAnalysis {
     bool open_file = false;             // Has open file
     bool rook_on_7th = false;           // Rook on 7th rank
     bool wrong_rook_pawn = false;       // Wrong rook's pawn in endgame
+    bool opposite_castling = false;     // Opposite castling
+    bool pawn_storm = false;            // Pawn storm possible
+    int pawn_storm_strength = 0;        // How strong the pawn storm is
     
     // Endgame-specific
     bool is_endgame = false;           // Is this an endgame?
@@ -223,6 +226,19 @@ bool detectExchangeSacrifice(const Board& b, int color, int& discount);
 
 // Detect queen for R+N/B
 bool detectQueenTrade(const Board& b, int color, int& discount);
+
+// ============================================================================
+// ATTACKING PATTERNS
+// ============================================================================
+
+// Detect opposite castling (both sides castled on opposite flanks)
+bool detectOppositeCastling(const Board& b);
+
+// Evaluate pawn storm potential when opposite castling
+int evaluatePawnStorm(const Board& b, int color);
+
+// Detect if king is vulnerable to pawn storm
+bool isKingVulnerableToStorm(const Board& b, int color);
 
 // ============================================================================
 // MAIN EVALUATION FUNCTIONS
