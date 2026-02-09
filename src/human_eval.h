@@ -324,6 +324,20 @@ int evaluatePieceCoordination(const Board& b, int color);
 // Prophylactic thinking assessment
 int evaluateProphylaxis(const Board& b, int color);
 
+// ============================================================================
+// PAWN BREAK TIMING (EUWE/KRAMER)
+// ============================================================================
+
+// Assess pawn break opportunities and timing
+int evaluatePawnBreaks(const Board& b, int color);
+
+// ============================================================================
+// CONVERSION MODE (AAGAARD)
+// ============================================================================
+
+// Evaluate when to switch from dynamic to static play
+int evaluateConversionMode(const Board& b, int color);
+
 } // namespace HumanEval
 
 #endif

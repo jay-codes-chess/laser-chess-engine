@@ -782,6 +782,230 @@ int evaluateEndgame(const Board& bd, int color) {
     return score;
 }
 
+// ============================================================================
+// PROPHYLAXIS (RUSSIAN SCHOOL)
+// ============================================================================
+//
+// From the Russian Chess School (Petrosian, Kamsky, etc.):
+// Prophylaxis = Preventing the opponent's threats BEFORE they exist
+// "Don't just play your own moves - stop your opponent's ideas!"
+//
+// Key ideas:
+// 1. Identify opponent's most dangerous plan
+// 2. Play a move that blocks or hinders that plan
+// 3. Restrict opponent's piece mobility
+// 4. Create zugzwang positions
+
+// Prophylactic thinking: assessing how well a player restricts opponent
+// Returns bonus for good prophylaxis
+int evaluateProphylaxis(const Board& bd, int color) {
+    int score = 0;
+    int opp = 1 - color;
+    
+    // 1. Restrict opponent king
+    int opp_king_sq = bd.getKingSq(opp);
+    int opp_kf = opp_king_sq % 8, opp_kr = opp_king_sq / 8;
+    
+    // Bonus if opponent's king has limited squares
+    uint64_t king_mobility = 0;
+    int kdirs[8] = {-9,-8,-7,-1,1,7,8,9};
+    for (int d : kdirs) {
+        int nsq = opp_king_sq + d;
+        if (nsq >= 0 && nsq < 64) {
+            int nf = nsq % 8, nr = nsq / 8;
+            if (abs(nf - opp_kf) <= 1 && abs(nr - opp_kr) <= 1) {
+                // Check if square is controlled by our pieces
+                // Simplified: just check pawn proximity
+                king_mobility |= 1ULL << nsq;
+            }
+        }
+    }
+    score += (64 - __builtin_popcountll(king_mobility)) / 2;
+    
+    // 2. Restrict opponent pieces
+    uint64_t opp_knights = bd.getPieces(opp, KNIGHTS);
+    uint64_t opp_bishops = bd.getPieces(opp, BISHOPS);
+    uint64_t opp_rooks = bd.getPieces(opp, ROOKS);
+    uint64_t opp_queens = bd.getPieces(opp, QUEENS);
+    
+    // If opponent has minor pieces trapped, that's good prophylaxis
+    uint64_t own_pawns = bd.getPieces(color, PAWNS);
+    
+    // Count opponent's minor pieces in corners/edges (restricted)
+    uint64_t corners = (1ULL << 0) | (1ULL << 7) | (1ULL << 56) | (1ULL << 63);
+    uint64_t edges = 0xFF000000000000FFULL | 0xFF00FF00FF00FF00ULL;
+    uint64_t restricted = (opp_knights | opp_bishops) & (corners | edges);
+    score += __builtin_popcountll(restricted) * 5;
+    
+    // 3. Control of opponent's natural squares
+    // If opponent's knight has no good outposts
+    uint64_t outpost_squares = 0;
+    // d4, e4, d5, e5 area
+    outpost_squares |= (1ULL << 27) | (1ULL << 28) | (1ULL << 35) | (1ULL << 36);
+    outpost_squares |= (1ULL << 26) | (1ULL << 37) | (1ULL << 19) | (1ULL << 44);
+    
+    uint64_t own_control = own_pawns | bd.getPieces(color, KNIGHTS) | bd.getPieces(color, BISHOPS);
+    uint64_t opp_outposts = outpost_squares & ~own_control;
+    score += __builtin_popcountll(opp_outposts) * 2;
+    
+    return score;
+}
+
+// ============================================================================
+// PAWN BREAK TIMING (EUWE/KRAMER)
+// ============================================================================
+//
+// From Euwe & Kramer - The Middlegame:
+// Pawn breaks are the "moments of truth" in chess
+// - Who has the last word on pawn breaks controls the game
+// - A pawn break either strengthens or weakens your position permanently
+//
+// Key concepts:
+// - The side that can make the LAST forcing pawn move has the initiative
+// - Central breaks (e4, d4, e5, d5) are most important
+// - Breaking into the opponent's pawn structure
+// - The "break or be broken" moment
+
+// Assess pawn break opportunities and timing
+int evaluatePawnBreaks(const Board& bd, int color) {
+    int score = 0;
+    int opp = 1 - color;
+    
+    uint64_t own_pawns = bd.getPieces(color, PAWNS);
+    uint64_t opp_pawns = bd.getPieces(opp, PAWNS);
+    
+    // 1. Center pawn breaks (most important)
+    // White: e4, d4 | Black: e5, d5
+    
+    bool white_e4_ready = (own_pawns & (1ULL << 12)); // e2 pawn can go to e4
+    bool white_d4_ready = (own_pawns & (1ULL << 11)); // d2 pawn can go to d4
+    bool black_e5_ready = (opp_pawns & (1ULL << 52)); // e7 pawn can go to e5
+    bool black_d5_ready = (opp_pawns & (1ULL << 51)); // d7 pawn can go to d5
+    
+    // Center control bonus - pawns that control center squares
+    uint64_t center = (1ULL << 27) | (1ULL << 28) | (1ULL << 35) | (1ULL << 36);
+    uint64_t center_control = 0;
+    
+    // White pawns controlling center
+    if (own_pawns & (1ULL << 19)) center_control |= 1ULL << 27; // d2 controls d4
+    if (own_pawns & (1ULL << 20)) center_control |= 1ULL << 28; // e2 controls e4
+    if (own_pawns & (1ULL << 27)) center_control |= 1ULL << 35; // d3 controls d5
+    if (own_pawns & (1ULL << 28)) center_control |= 1ULL << 36; // e3 controls e5
+    
+    // Black pawns controlling center
+    uint64_t opp_center_control = 0;
+    if (opp_pawns & (1ULL << 44)) opp_center_control |= 1ULL << 36; // d6 controls d5
+    if (opp_pawns & (1ULL << 45)) opp_center_control |= 1ULL << 35; // e6 controls e5
+    if (opp_pawns & (1ULL << 35)) opp_center_control |= 1ULL << 27; // d4 controls d3
+    if (opp_pawns & (1ULL << 36)) opp_center_control |= 1ULL << 26; // e4 controls e3
+    
+    int center_score = __builtin_popcountll(center_control) - __builtin_popcountll(opp_center_control);
+    score += center_score * 5;
+    
+    // 2. Pawn break readiness
+    // If you can break and opponent can't respond in kind
+    int break_score = assessPawnBreakTiming(bd, color);
+    score += break_score;
+    
+    // 3. Wing pawn breaks (a4, b4, h4, g4, etc.)
+    // These are usually for creating weaknesses, not direct attacks
+    
+    // 4. The "break or be broken" assessment
+    // If your pawn structure is static (blocked), you're in danger
+    uint64_t own_blocked = own_pawns;
+    // Pawn is blocked if pawn in front of it
+    for (int f = 0; f < 8; f++) {
+        for (int r = 1; r < 7; r++) {
+            int sq = f + r * 8;
+            if (own_pawns & (1ULL << sq)) {
+                int block_sq = (color == WHITE) ? sq + 8 : sq - 8;
+                if (block_sq >= 0 && block_sq < 64) {
+                    if (opp_pawns & (1ULL << block_sq)) {
+                        score -= 5; // Blocked pawn = weakness
+                    }
+                }
+            }
+        }
+    }
+    
+    return score;
+}
+
+// ============================================================================
+// CONVERSION MODE (AAGAARD)
+// ============================================================================
+//
+// From Aagaard - Positional Play:
+// Conversion Mode = When to switch from dynamic to static play
+//
+// Static advantages: Material, pawn structure, king safety
+// Dynamic advantages: Initiative, piece activity, space
+//
+// If you have a CLEAR static advantage:
+// → Switch to conversion mode (simplify, trade, convert)
+// If you only have dynamic advantage:
+// → Keep playing dynamically (don't simplify!)
+//
+// Returns bonus for correctly choosing conversion vs continuation
+int evaluateConversionMode(const Board& bd, int color) {
+    int score = 0;
+    int opp = 1 - color;
+    
+    // Calculate advantage type
+    int material_diff = 0;
+    int pv[5] = {100, 320, 330, 500, 900};
+    for (int pt = 0; pt < 5; pt++) {
+        int w = __builtin_popcountll(bd.getPieces(WHITE, pt + 1));
+        int bl = __builtin_popcountll(bd.getPieces(BLACK, pt + 1));
+        material_diff += (w - bl) * pv[pt];
+    }
+    
+    // Pawn structure advantage
+    PawnStructure own_ps, opp_ps;
+    analyzePawnStructure(bd, color, own_ps);
+    analyzePawnStructure(bd, opp, opp_ps);
+    int structure_diff = (own_ps.passed_count - opp_ps.passed_count) * 30 -
+                        (own_ps.isolated_count - opp_ps.isolated_count) * 25;
+    
+    // Initiative
+    int initiative = evaluateInitiative(bd, color);
+    
+    // Static advantage = material OR structure
+    bool has_static_advantage = (material_diff > 150) || (structure_diff > 30);
+    // Dynamic advantage = initiative
+    bool has_dynamic_advantage = (initiative > 20);
+    
+    // Count major pieces
+    uint64_t own_major = bd.getPieces(color, ROOKS) | bd.getPieces(color, QUEENS);
+    uint64_t opp_major = bd.getPieces(opp, ROOKS) | bd.getPieces(opp, QUEENS);
+    
+    // In conversion mode, we want to:
+    // 1. Trade into favorable endgames
+    // 2. Simplify when ahead
+    // 3. Play "quiet" moves
+    
+    if (has_static_advantage && !has_dynamic_advantage) {
+        // We have a clear static advantage - should be converting
+        // Bonus for having pieces that can trade down
+        
+        if (__builtin_popcountll(own_major) > __builtin_popcountll(opp_major)) {
+            score += 20; // Can trade down to winning endgame
+        }
+        
+        // Bonus for having passed pawns (easy to convert)
+        if (own_ps.passed_count > 0) {
+            score += own_ps.passed_count * 15;
+        }
+    }
+    
+    if (!has_static_advantage && has_dynamic_advantage) {
+        // Only dynamic advantage - should NOT simplify
+        score -= __builtin_popcountll(own_major) * 5; // Penalty for having many major pieces
+    }
+    
+    return score;
+}
+
 bool detectExchangeSacrifice(const Board& bd, int color, int& discount) {
     int r = __builtin_popcountll(bd.getPieces(color, ROOKS));
     int or_ = __builtin_popcountll(bd.getPieces(1-color, ROOKS));
